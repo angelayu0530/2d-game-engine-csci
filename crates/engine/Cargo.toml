@@ -1,0 +1,10 @@
+[package]
+name = "engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Single-threaded 2D particle engine with swappable allocation backends"
+
+[dependencies]
+libc.workspace = true
