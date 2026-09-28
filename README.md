@@ -16,17 +16,15 @@ fixed-size particles, and at what peak-memory cost?
 ## Layout
 
 ```
-Cargo.toml              workspace; release profile used for all measurements
-crates/
-  engine/               library: particle type, allocator trait, three backends, workload loop
-    src/particle.rs     fixed-size Particle (pos, vel, lifetime), deterministic spawn, update
-    src/alloc/mod.rs    Allocator trait shared by every backend
-    src/alloc/heap.rs   baseline: one allocation per object, freed individually
-    src/alloc/pool.rs   fixed-size pool: preallocated slots + free list
-    src/alloc/arena.rs  linear arena: bump cursor through blocks, reclaim all at once
-    src/workload.rs     the fixed test loop and per-phase timing
-    src/memory.rs       peak RSS measurement
-  bench/                binary: runs the matrix (allocator x count), warmups, trials, CSV output
+Cargo.toml              single binary crate; release profile used for all measurements
+src/main.rs             declares the modules and starts the program
+src/particle.rs         fixed-size Particle (pos, vel, lifetime), deterministic spawn, update
+src/alloc/mod.rs        Allocator trait shared by every backend
+src/alloc/heap.rs       baseline: one allocation per object, freed individually
+src/alloc/pool.rs       fixed-size pool: preallocated slots + free list
+src/alloc/arena.rs      linear arena: bump cursor through blocks, reclaim all at once
+src/workload.rs         the fixed test loop and per-phase timing
+src/memory.rs           peak RSS measurement
 results/                CSV output and plots (gitignored except this folder)
 scripts/                plotting and run-matrix helpers (to be added)
 ```
@@ -67,7 +65,7 @@ object count.
 ```sh
 cargo build --release
 cargo test
-cargo run --release -p bench -- --help
+cargo run --release
 ```
 
 ## Status
@@ -78,5 +76,5 @@ Scaffold only. Every function body is `todo!()`. Implementation order:
 2. `alloc/heap.rs`, then `pool.rs`, then `arena.rs`
 3. `workload.rs` and cross-backend checksum test
 4. `memory.rs`
-5. `bench` harness and CSV output
+5. Trial loop and CSV output in `main.rs`
 6. Plot script under `scripts/`

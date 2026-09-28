@@ -1,15 +1,11 @@
-[workspace]
-resolver = "2"
-members = ["crates/engine", "crates/bench"]
-
-[workspace.package]
+[package]
+name = "game-engine"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 authors = ["Angela Yu", "Tahmid Ahmed"]
 
-[workspace.dependencies]
-engine = { path = "crates/engine" }
+[dependencies]
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
 
