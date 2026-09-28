@@ -1,5 +1,4 @@
-use super::Allocator;
-use crate::particle::Particle;
+use crate::{alloc::Allocator, particle::Particle};
 
 #[derive(Debug, Default)]
 pub struct PoolAllocator;

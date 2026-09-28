@@ -2,6 +2,8 @@ pub mod arena;
 pub mod heap;
 pub mod pool;
 
+use std::mem::size_of;
+
 use crate::particle::Particle;
 
 pub trait Allocator {
@@ -19,6 +21,6 @@ pub trait Allocator {
     fn reserved_bytes(&self) -> usize;
 
     fn live_bytes(&self) -> usize {
-        self.live_count() * std::mem::size_of::<Particle>()
+        self.live_count() * size_of::<Particle>()
     }
 }
