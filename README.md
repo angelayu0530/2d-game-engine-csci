@@ -16,7 +16,7 @@ fixed-size particles, and at what peak-memory cost?
 ## Layout
 
 ```
-Cargo.toml              single binary crate; release profile used for all measurements
+Cargo.toml              package manifest; release profile used for all measurements
 src/main.rs             declares the modules and starts the program
 src/particle.rs         fixed-size Particle (pos, vel, lifetime), deterministic spawn, update
 src/alloc/mod.rs        Allocator trait shared by every backend
