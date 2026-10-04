@@ -84,7 +84,7 @@ pub fn run<A: Allocator>(cfg: &WorkloadConfig) -> RunResult {
 }
 
 /// FNV-1a over every particle's raw bits, in spawn order.
-fn checksum<A: Allocator>(alloc: &A, handles: &[A::AllocatedReferenceKey]) -> u64 {
+fn checksum<A: Allocator>(alloc: &A, handles: &[A::Handle]) -> u64 {
     handles.iter().fold(0xCBF2_9CE4_8422_2325, |hash, &handle| {
         let p = alloc.get(handle);
         [

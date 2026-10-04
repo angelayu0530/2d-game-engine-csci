@@ -1,21 +1,11 @@
 use std::hint::black_box;
 
 use clap::{Parser, ValueEnum};
-
-use crate::{
+use game_engine::{
     alloc::{Allocator, arena::ArenaAllocator, heap::HeapAllocator, pool::PoolAllocator},
     memory::peak_rss_bytes,
     workload::{WorkloadConfig, run},
 };
-
-#[allow(dead_code)]
-mod alloc;
-#[allow(dead_code)]
-mod memory;
-#[allow(dead_code)]
-mod particle;
-#[allow(dead_code)]
-mod workload;
 
 const CSV_HEADER: &str = "allocator,count,updates,trial,setup_ns,spawn_ns,update_ns,retire_ns,\
                           reclaim_ns,total_ns,checksum,reserved_bytes,peak_rss_bytes";
