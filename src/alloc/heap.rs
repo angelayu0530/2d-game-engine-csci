@@ -8,8 +8,12 @@ pub struct HeapAllocator {
     live: usize,
 }
 
+/// Pointer to one `Box` allocation. Only this module can construct it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Handle(*mut Particle);
+
 impl Allocator for HeapAllocator {
-    type AllocatedReferenceKey = *mut Particle;
+    type Handle = Handle;
 
     const NAME: &'static str = "heap";
 
@@ -18,24 +22,24 @@ impl Allocator for HeapAllocator {
         Self::default()
     }
 
-    fn create(&mut self, particle: Particle) -> Self::AllocatedReferenceKey {
+    fn create(&mut self, particle: Particle) -> Self::Handle {
         self.live += 1;
-        Box::into_raw(Box::new(particle))
+        Handle(Box::into_raw(Box::new(particle)))
     }
 
-    fn get(&self, handle: Self::AllocatedReferenceKey) -> &Particle {
-        // SAFETY: handles come from `create` (`Box::into_raw`) and stay valid until `retire`.
-        unsafe { &*handle }
+    fn get(&self, handle: Self::Handle) -> &Particle {
+        // SAFETY: `handle.0` comes from `Box::into_raw` in `create` and stays valid until `retire`.
+        unsafe { &*handle.0 }
     }
 
-    fn get_mut(&mut self, handle: Self::AllocatedReferenceKey) -> &mut Particle {
-        // SAFETY: as in `get`; `&mut self` prevents overlapping borrows through this allocator.
-        unsafe { &mut *handle }
+    fn get_mut(&mut self, handle: Self::Handle) -> &mut Particle {
+        // SAFETY: as in `get`. `&mut self` prevents overlapping borrows through this allocator.
+        unsafe { &mut *handle.0 }
     }
 
-    fn retire(&mut self, handle: Self::AllocatedReferenceKey) {
-        // SAFETY: `handle` came from `Box::into_raw` in `create` and is retired exactly once.
-        drop(unsafe { Box::from_raw(handle) });
+    fn retire(&mut self, handle: Self::Handle) {
+        // SAFETY: `handle.0` came from `Box::into_raw` in `create` and is retired exactly once.
+        drop(unsafe { Box::from_raw(handle.0) });
         self.live -= 1;
     }
 

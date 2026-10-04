@@ -5,16 +5,22 @@ use crate::{alloc::Allocator, particle::Particle};
 /// Free-list terminator; also caps the pool at `u32::MAX - 1` slots.
 const NIL: u32 = u32::MAX;
 
-/// A slot is either a live particle or a link in the intrusive free list.
+/// Live particle, or an intrusive free-list link once the slot is dead.
 ///
-/// Invariant: every slot is written in full as `Slot { particle }` before its index is handed
-/// out, and retiring only overwrites `next_free`. `Particle` is all 4-byte f32/u32 fields, so it
-/// has no padding in any field order and every bit pattern is valid: reading either field
-/// always sees initialized bytes.
+/// `create` writes a full `Particle` before handing out the index. `retire` overwrites only
+/// `next_free`. `Particle` is five `u32`-sized fields with no padding, so either view reads
+/// initialized bytes.
 union Slot {
     particle: Particle,
     next_free: u32,
 }
+
+const _: () = assert!(size_of::<Particle>() == 5 * size_of::<u32>());
+const _: () = assert!(size_of::<Slot>() == size_of::<Particle>());
+
+/// Index into `slots`. Only this module can construct it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Handle(u32);
 
 /// Fixed-size pool: contiguous slots reserved up front, retired slots recycled LIFO.
 pub struct PoolAllocator {
@@ -27,10 +33,14 @@ pub struct PoolAllocator {
 
 impl PoolAllocator {
     #[cfg(debug_assertions)]
-    fn assert_live(&self, handle: u32) {
+    fn assert_live(&self, handle: Handle) {
         assert!(
-            self.occupied.get(handle as usize).copied().unwrap_or(false),
-            "pool handle {handle} is not live"
+            self.occupied
+                .get(handle.0 as usize)
+                .copied()
+                .unwrap_or(false),
+            "pool handle {} is not live",
+            handle.0
         );
     }
 }
@@ -53,7 +63,7 @@ impl fmt::Debug for PoolAllocator {
 }
 
 impl Allocator for PoolAllocator {
-    type AllocatedReferenceKey = u32;
+    type Handle = Handle;
 
     const NAME: &'static str = "pool";
 
@@ -71,7 +81,7 @@ impl Allocator for PoolAllocator {
         }
     }
 
-    fn create(&mut self, particle: Particle) -> Self::AllocatedReferenceKey {
+    fn create(&mut self, particle: Particle) -> Self::Handle {
         let handle = if self.free_head == NIL {
             assert!(
                 self.slots.len() < NIL as usize,
@@ -95,32 +105,32 @@ impl Allocator for PoolAllocator {
             handle
         };
         self.live += 1;
-        handle
+        Handle(handle)
     }
 
-    fn get(&self, handle: Self::AllocatedReferenceKey) -> &Particle {
+    fn get(&self, handle: Self::Handle) -> &Particle {
         #[cfg(debug_assertions)]
         self.assert_live(handle);
-        // SAFETY: slot bytes are always a valid `Particle` (see `Slot`); a stale handle reads
-        // garbage but never uninitialized or freed memory.
-        unsafe { &self.slots[handle as usize].particle }
+        // SAFETY: slot bytes are always a valid `Particle` (see `Slot`). A stale handle reads
+        // garbage, not uninitialized or freed memory.
+        unsafe { &self.slots[handle.0 as usize].particle }
     }
 
-    fn get_mut(&mut self, handle: Self::AllocatedReferenceKey) -> &mut Particle {
+    fn get_mut(&mut self, handle: Self::Handle) -> &mut Particle {
         #[cfg(debug_assertions)]
         self.assert_live(handle);
         // SAFETY: as in `get`.
-        unsafe { &mut self.slots[handle as usize].particle }
+        unsafe { &mut self.slots[handle.0 as usize].particle }
     }
 
-    fn retire(&mut self, handle: Self::AllocatedReferenceKey) {
+    fn retire(&mut self, handle: Self::Handle) {
         #[cfg(debug_assertions)]
         {
             self.assert_live(handle);
-            self.occupied[handle as usize] = false;
+            self.occupied[handle.0 as usize] = false;
         }
-        self.slots[handle as usize].next_free = self.free_head;
-        self.free_head = handle;
+        self.slots[handle.0 as usize].next_free = self.free_head;
+        self.free_head = handle.0;
         self.live -= 1;
     }
 
@@ -140,15 +150,4 @@ impl Allocator for PoolAllocator {
     fn reserved_bytes(&self) -> usize {
         self.slots.capacity() * size_of::<Slot>()
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::mem::size_of;
-
-    use super::Slot;
-    use crate::particle::Particle;
-
-    // The free-list link lives inside dead particles, so a slot costs exactly one particle.
-    const _: () = assert!(size_of::<Slot>() == size_of::<Particle>());
 }

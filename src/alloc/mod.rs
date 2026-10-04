@@ -6,16 +6,20 @@ use std::mem::size_of;
 
 use crate::particle::Particle;
 
+/// Backing storage for particles.
+///
+/// A `Handle` comes from `create` and stays valid only until `retire` on that same allocator.
+/// Using a heap or arena handle after `retire` is undefined behavior.
 pub trait Allocator {
-    type AllocatedReferenceKey: Copy;
+    type Handle: Copy;
 
     const NAME: &'static str;
 
     fn with_capacity(capacity: usize) -> Self;
-    fn create(&mut self, particle: Particle) -> Self::AllocatedReferenceKey;
-    fn get(&self, handle: Self::AllocatedReferenceKey) -> &Particle;
-    fn get_mut(&mut self, handle: Self::AllocatedReferenceKey) -> &mut Particle;
-    fn retire(&mut self, handle: Self::AllocatedReferenceKey);
+    fn create(&mut self, particle: Particle) -> Self::Handle;
+    fn get(&self, handle: Self::Handle) -> &Particle;
+    fn get_mut(&mut self, handle: Self::Handle) -> &mut Particle;
+    fn retire(&mut self, handle: Self::Handle);
     fn reclaim(&mut self);
     fn live_count(&self) -> usize;
     fn reserved_bytes(&self) -> usize;
@@ -45,7 +49,7 @@ mod tests {
     /// every live handle still resolves to its own particle.
     fn churn_keeps_values<A: Allocator>() {
         let mut alloc = A::with_capacity(8);
-        let mut live: Vec<(A::AllocatedReferenceKey, usize)> =
+        let mut live: Vec<(A::Handle, usize)> =
             (0..5_000).map(|i| (alloc.create(particle(i)), i)).collect();
 
         // Retire every other object, then refill so pool slots get recycled.
@@ -59,6 +63,12 @@ mod tests {
         }
         kept.extend((5_000..7_500).map(|i| (alloc.create(particle(i)), i)));
         assert_eq!(alloc.live_count(), kept.len(), "{}", A::NAME);
+        assert_eq!(
+            alloc.live_bytes(),
+            kept.len() * size_of::<Particle>(),
+            "{}",
+            A::NAME
+        );
 
         for &(handle, _) in &kept {
             alloc.get_mut(handle).lifetime += 1;
@@ -101,7 +111,7 @@ mod tests {
     /// and with an exact hint.
     fn mass_create_and_retire<A: Allocator>()
     where
-        A::AllocatedReferenceKey: Ord + Debug,
+        A::Handle: Ord + Debug,
     {
         for capacity in [0, MASS] {
             let mut alloc = A::with_capacity(capacity);

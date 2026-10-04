@@ -1,4 +1,4 @@
-use std::mem::size_of;
+use std::{mem::size_of, ptr::from_mut};
 
 use crate::{alloc::Allocator, particle::Particle};
 
@@ -16,6 +16,10 @@ pub struct ArenaAllocator {
     current: usize,
     live: usize,
 }
+
+/// Pointer into a block buffer. Only this module can construct it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Handle(*mut Particle);
 
 impl ArenaAllocator {
     fn block_with_room(&mut self) -> &mut Vec<Particle> {
@@ -36,18 +40,22 @@ impl ArenaAllocator {
     }
 
     #[cfg(debug_assertions)]
-    fn assert_owned(&self, handle: *mut Particle) {
-        let ptr = handle.cast_const();
+    fn assert_owned(&self, handle: Handle) {
+        let ptr = handle.0.cast_const();
         let owned = self.blocks.iter().any(|block| {
             let start = block.as_ptr();
             ptr >= start && ptr < start.wrapping_add(block.len())
         });
-        assert!(owned, "arena handle {handle:p} is not a slot of this arena");
+        assert!(
+            owned,
+            "arena handle {:p} is not a slot of this arena",
+            handle.0
+        );
     }
 }
 
 impl Allocator for ArenaAllocator {
-    type AllocatedReferenceKey = *mut Particle;
+    type Handle = Handle;
 
     const NAME: &'static str = "arena";
 
@@ -64,36 +72,37 @@ impl Allocator for ArenaAllocator {
         }
     }
 
-    fn create(&mut self, particle: Particle) -> Self::AllocatedReferenceKey {
+    fn create(&mut self, particle: Particle) -> Self::Handle {
         let block = self.block_with_room();
         let index = block.len();
-        // No reallocation: `block_with_room` guarantees spare capacity.
         block.push(particle);
-        // SAFETY: `index < len`, so the offset stays inside the block's buffer.
-        let handle = unsafe { block.as_mut_ptr().add(index) };
+        let handle = Handle(from_mut(&mut block[index]));
         self.live += 1;
         handle
     }
 
-    fn get(&self, handle: Self::AllocatedReferenceKey) -> &Particle {
+    fn get(&self, handle: Self::Handle) -> &Particle {
         #[cfg(debug_assertions)]
         self.assert_owned(handle);
-        // SAFETY: handles point into a block buffer that stays put and initialized until `reclaim`.
-        unsafe { &*handle }
+        // SAFETY: `handle.0` points into a block buffer that stays put and initialized until
+        // `reclaim`. `block_with_room` never pushes past a block's capacity, so the buffer
+        // does not move.
+        unsafe { &*handle.0 }
     }
 
-    fn get_mut(&mut self, handle: Self::AllocatedReferenceKey) -> &mut Particle {
+    fn get_mut(&mut self, handle: Self::Handle) -> &mut Particle {
         #[cfg(debug_assertions)]
         self.assert_owned(handle);
-        // SAFETY: as in `get`; `&mut self` prevents overlapping borrows through this allocator.
-        unsafe { &mut *handle }
+        // SAFETY: as in `get`. `&mut self` prevents overlapping borrows through this allocator.
+        unsafe { &mut *handle.0 }
     }
 
     /// Bookkeeping only; the slot's memory comes back at `reclaim`.
-    #[cfg_attr(not(debug_assertions), allow(unused_variables))]
-    fn retire(&mut self, handle: Self::AllocatedReferenceKey) {
+    fn retire(&mut self, handle: Self::Handle) {
         #[cfg(debug_assertions)]
         self.assert_owned(handle);
+        #[cfg(not(debug_assertions))]
+        let _ = handle;
         self.live -= 1;
     }
 
