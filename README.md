@@ -17,7 +17,7 @@ fixed-size particles, and at what peak-memory cost?
 
 ```
 Cargo.toml              package manifest; release profile used for all measurements
-src/main.rs             declares the modules and starts the program
+src/main.rs             benchmark CLI: one allocator per process, CSV rows on stdout
 src/particle.rs         fixed-size Particle (pos, vel, lifetime), deterministic spawn, update
 src/alloc/mod.rs        Allocator trait shared by every backend
 src/alloc/heap.rs       baseline: one allocation per object, freed individually
@@ -26,7 +26,7 @@ src/alloc/arena.rs      linear arena: bump cursor through blocks, reclaim all at
 src/workload.rs         the fixed test loop and per-phase timing
 src/memory.rs           peak RSS measurement
 results/                CSV output and plots (gitignored except this folder)
-scripts/                plotting and run-matrix helpers (to be added)
+scripts/bench.py        runs every allocator N times per count, writes CSV, prints a summary
 ```
 
 ## Workload
@@ -65,16 +65,20 @@ object count.
 ```sh
 cargo build --release
 cargo test
-cargo run --release
+
+# one allocator, one process; prints a CSV header plus one row per measured trial
+cargo run --release -- --allocator pool --count 1000000 --trials 10
+cargo run --release -- --help
+
+# every allocator, 5 processes each, per count; writes results/bench.csv
+python3 scripts/bench.py --runs 5 --counts 10000 100000 1000000
 ```
+
+Peak RSS is a per-process high-water mark, so each allocator runs in its own
+process. `scripts/bench.py` fails if final-state checksums differ between
+allocators at the same count.
 
 ## Status
 
-Scaffold only. Every function body is `todo!()`. Implementation order:
-
-1. `particle.rs`
-2. `alloc/heap.rs`, then `pool.rs`, then `arena.rs`
-3. `workload.rs` and cross-backend checksum test
-4. `memory.rs`
-5. Trial loop and CSV output in `main.rs`
-6. Plot script under `scripts/`
+Allocators, workload, peak RSS, the benchmark CLI, and the run script are
+implemented. Remaining: a plot script under `scripts/`.
