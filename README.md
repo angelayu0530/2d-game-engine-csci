@@ -67,11 +67,9 @@ object count.
 cargo build --release
 cargo test
 
-# one allocator, one process; prints a CSV header plus one row per measured trial
 cargo run --release -- --allocator pool --count 1000000 --trials 10
 cargo run --release -- --help
 
-# every allocator, 5 processes each, per count; writes results/bench.csv
 python3 scripts/bench.py --runs 5 --counts 10000 100000 1000000
 ```
 

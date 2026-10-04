@@ -6,10 +6,6 @@ use std::mem::size_of;
 
 use crate::particle::Particle;
 
-/// Backing storage for particles.
-///
-/// A `Handle` comes from `create` and stays valid only until `retire` on that same allocator.
-/// Using a heap or arena handle after `retire` is undefined behavior.
 pub trait Allocator {
     type Handle: Copy;
 
@@ -45,14 +41,11 @@ mod tests {
         }
     }
 
-    /// Grows past any initial block/capacity, interleaves retire and reuse, and checks that
-    /// every live handle still resolves to its own particle.
     fn churn_keeps_values<A: Allocator>() {
         let mut alloc = A::with_capacity(8);
         let mut live: Vec<(A::Handle, usize)> =
             (0..5_000).map(|i| (alloc.create(particle(i)), i)).collect();
 
-        // Retire every other object, then refill so pool slots get recycled.
         let mut kept = Vec::new();
         for (n, (handle, i)) in live.drain(..).enumerate() {
             if n % 2 == 0 {
@@ -88,7 +81,6 @@ mod tests {
         alloc.reclaim();
     }
 
-    /// A second identical batch after `reclaim` must fit in the storage the first one reserved.
     fn reclaim_reuses_storage<A: Allocator>() {
         let mut alloc = A::with_capacity(0);
         let mut reserved = Vec::new();
@@ -105,10 +97,6 @@ mod tests {
 
     const MASS: usize = 1_000_000;
 
-    /// Creates `MASS` objects and checks every returned key, then retires them all. Three
-    /// batches: the second runs before `reclaim` (pool reuses retired slots, arena keeps
-    /// bumping), the third after it (storage reset). Run with no capacity hint, so storage grows,
-    /// and with an exact hint.
     fn mass_create_and_retire<A: Allocator>()
     where
         A::Handle: Ord + Debug,
@@ -135,7 +123,6 @@ mod tests {
                 }
                 assert_eq!(alloc.live_count(), MASS, "{ctx}");
 
-                // Later creates must not overwrite or move earlier objects.
                 for (i, &handle) in handles.iter().enumerate() {
                     assert_eq!(
                         *alloc.get(handle),

@@ -2,14 +2,8 @@ use std::{fmt, mem::size_of};
 
 use crate::{alloc::Allocator, particle::Particle};
 
-/// Free-list terminator; also caps the pool at `u32::MAX - 1` slots.
 const NIL: u32 = u32::MAX;
 
-/// Live particle, or an intrusive free-list link once the slot is dead.
-///
-/// `create` writes a full `Particle` before handing out the index. `retire` overwrites only
-/// `next_free`. `Particle` is five `u32`-sized fields with no padding, so either view reads
-/// initialized bytes.
 union Slot {
     particle: Particle,
     next_free: u32,
@@ -18,11 +12,9 @@ union Slot {
 const _: () = assert!(size_of::<Particle>() == 5 * size_of::<u32>());
 const _: () = assert!(size_of::<Slot>() == size_of::<Particle>());
 
-/// Index into `slots`. Only this module can construct it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Handle(u32);
 
-/// Fixed-size pool: contiguous slots reserved up front, retired slots recycled LIFO.
 pub struct PoolAllocator {
     slots: Vec<Slot>,
     free_head: u32,
@@ -95,7 +87,6 @@ impl Allocator for PoolAllocator {
         } else {
             let handle = self.free_head;
             let slot = &mut self.slots[handle as usize];
-            // SAFETY: slot bytes are always initialized (see `Slot`) and any u32 is valid.
             self.free_head = unsafe { slot.next_free };
             *slot = Slot { particle };
             #[cfg(debug_assertions)]
@@ -111,15 +102,12 @@ impl Allocator for PoolAllocator {
     fn get(&self, handle: Self::Handle) -> &Particle {
         #[cfg(debug_assertions)]
         self.assert_live(handle);
-        // SAFETY: slot bytes are always a valid `Particle` (see `Slot`). A stale handle reads
-        // garbage, not uninitialized or freed memory.
         unsafe { &self.slots[handle.0 as usize].particle }
     }
 
     fn get_mut(&mut self, handle: Self::Handle) -> &mut Particle {
         #[cfg(debug_assertions)]
         self.assert_live(handle);
-        // SAFETY: as in `get`.
         unsafe { &mut self.slots[handle.0 as usize].particle }
     }
 
@@ -134,7 +122,6 @@ impl Allocator for PoolAllocator {
         self.live -= 1;
     }
 
-    /// Drops every slot at once but keeps the reserved storage for the next batch.
     fn reclaim(&mut self) {
         assert_eq!(self.live, 0, "reclaim called with live pool objects");
         self.slots.clear();
