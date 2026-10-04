@@ -34,12 +34,6 @@ pub struct RunResult {
     pub reserved_bytes: usize,
 }
 
-/// Runs the fixed workload once: reserve, spawn `count` particles, run `updates` fixed steps,
-/// retire every particle, reclaim.
-///
-/// `reclaim` also drops the allocator, so returning storage is timed for every backend: heap
-/// frees during `retire`, pool and arena only here. The checksum is taken between `update` and
-/// `retire` and is not timed. `reserved_bytes` is read once spawning is done.
 pub fn run<A: Allocator>(cfg: &WorkloadConfig) -> RunResult {
     let mut phases = Phases::default();
 
@@ -83,8 +77,7 @@ pub fn run<A: Allocator>(cfg: &WorkloadConfig) -> RunResult {
     }
 }
 
-/// FNV-1a over every particle's raw bits, in spawn order.
-fn checksum<A: Allocator>(alloc: &A, handles: &[A::AllocatedReferenceKey]) -> u64 {
+fn checksum<A: Allocator>(alloc: &A, handles: &[A::Handle]) -> u64 {
     handles.iter().fold(0xCBF2_9CE4_8422_2325, |hash, &handle| {
         let p = alloc.get(handle);
         [

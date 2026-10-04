@@ -17,6 +17,7 @@ fixed-size particles, and at what peak-memory cost?
 
 ```
 Cargo.toml              package manifest; release profile used for all measurements
+src/lib.rs              allocators, workload, and peak RSS
 src/main.rs             benchmark CLI: one allocator per process, CSV rows on stdout
 src/particle.rs         fixed-size Particle (pos, vel, lifetime), deterministic spawn, update
 src/alloc/mod.rs        Allocator trait shared by every backend
@@ -66,11 +67,9 @@ object count.
 cargo build --release
 cargo test
 
-# one allocator, one process; prints a CSV header plus one row per measured trial
 cargo run --release -- --allocator pool --count 1000000 --trials 10
 cargo run --release -- --help
 
-# every allocator, 5 processes each, per count; writes results/bench.csv
 python3 scripts/bench.py --runs 5 --counts 10000 100000 1000000
 ```
 
@@ -81,4 +80,10 @@ allocators at the same count.
 ## Status
 
 Allocators, workload, peak RSS, the benchmark CLI, and the run script are
-implemented. Remaining: a plot script under `scripts/`.
+implemented. Counts run so far: 10K, 100K, and 1M.
+
+Next:
+
+- Plot script under `scripts/`. Read `results/bench.csv` and graph runtime and peak memory against object count.
+- 5M object count. Not run yet.
+- A small game that spawns, updates, and destroys particles through the same allocators, so the comparison is exercised by a real game loop and not only by `scripts/bench.py`.

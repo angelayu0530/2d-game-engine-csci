@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""Run the release benchmark for each allocator and summarize the results.
-
-Each (allocator, count) pair runs in its own process `--runs` times, so peak RSS is not
-shared between backends. Every row lands in one CSV; the summary prints medians and spread.
-
-    python3 scripts/bench.py --runs 5 --counts 10000 100000 1000000
-"""
 
 import argparse
 import csv
@@ -21,7 +14,9 @@ ALLOCATORS = ["heap", "pool", "arena"]
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(
+        description="Run the release benchmark for each allocator and summarize the results."
+    )
     parser.add_argument("--runs", type=int, default=3, help="processes per allocator and count")
     parser.add_argument("--counts", type=int, nargs="+", default=[10_000, 100_000, 1_000_000])
     parser.add_argument("--allocators", nargs="+", choices=ALLOCATORS, default=ALLOCATORS)
@@ -98,7 +93,6 @@ def summarize(rows, counts, allocators) -> None:
 
 
 def spread(values) -> float:
-    """Interquartile range as a percentage of the median."""
     if len(values) < 2:
         return 0.0
     q1, _, q3 = statistics.quantiles(values, n=4)
