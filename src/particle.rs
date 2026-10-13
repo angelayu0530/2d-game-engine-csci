@@ -26,6 +26,16 @@ impl Particle {
         }
     }
 
+    pub fn at(index: usize, origin: [f32; 2], lifetime: u32) -> Self {
+        let mut particle = Self::seeded(index);
+        particle.pos = [
+            origin[0] + particle.vel[0] * 0.25,
+            origin[1] + particle.vel[1] * 0.25,
+        ];
+        particle.lifetime = lifetime;
+        particle
+    }
+
     pub fn update(&mut self, dt: f32) {
         self.vel[1] -= GRAVITY * dt;
         self.pos[0] += self.vel[0] * dt;
