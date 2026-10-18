@@ -4,7 +4,33 @@ pub mod pool;
 
 use std::mem::size_of;
 
+use clap::ValueEnum;
+
 use crate::particle::Particle;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Backend {
+    Heap,
+    Pool,
+    Arena,
+}
+
+#[macro_export]
+macro_rules! with_allocator {
+    ($backend:expr, $func:ident($($arg:expr),* $(,)?)) => {
+        match $backend {
+            $crate::alloc::Backend::Heap => {
+                $func::<$crate::alloc::heap::HeapAllocator>($($arg),*)
+            }
+            $crate::alloc::Backend::Pool => {
+                $func::<$crate::alloc::pool::PoolAllocator>($($arg),*)
+            }
+            $crate::alloc::Backend::Arena => {
+                $func::<$crate::alloc::arena::ArenaAllocator>($($arg),*)
+            }
+        }
+    };
+}
 
 pub trait Allocator {
     type Handle: Copy;
@@ -29,8 +55,23 @@ pub trait Allocator {
 mod tests {
     use std::fmt::Debug;
 
-    use super::{Allocator, arena::ArenaAllocator, heap::HeapAllocator, pool::PoolAllocator};
+    use clap::ValueEnum;
+
+    use super::{
+        Allocator, Backend, arena::ArenaAllocator, heap::HeapAllocator, pool::PoolAllocator,
+    };
     use crate::particle::Particle;
+
+    #[test]
+    fn every_backend_dispatches_to_the_allocator_it_names() {
+        fn name<A: Allocator>() -> &'static str {
+            A::NAME
+        }
+        for &backend in Backend::value_variants() {
+            let flag = backend.to_possible_value().unwrap();
+            assert_eq!(crate::with_allocator!(backend, name()), flag.get_name());
+        }
+    }
 
     fn particle(i: usize) -> Particle {
         let x = i as f32;

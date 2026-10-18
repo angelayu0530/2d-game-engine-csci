@@ -1,5 +1,8 @@
 pub mod alloc;
+pub mod canvas;
 pub mod memory;
 pub mod particle;
 pub mod pong;
+#[cfg(feature = "window")]
+pub mod window;
 pub mod workload;

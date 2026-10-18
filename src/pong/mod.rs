@@ -1,20 +1,31 @@
+mod cpu;
+mod render;
+mod replay;
+mod trace;
+
 use std::time::{Duration, Instant};
+
+pub use cpu::{Cpu, CpuConfig};
+pub use render::draw;
+pub use replay::{Replay, replay};
+pub use trace::{Frame, TRACE_HEADER, TraceMode};
 
 use crate::{alloc::Allocator, particle::Particle};
 
-const WIDTH: f32 = 1024.0;
-const HEIGHT: f32 = 768.0;
-const PADDLE_HALF_H: f32 = 48.0;
-const PADDLE_SPEED: f32 = 150.0;
-const BALL_RADIUS: f32 = 8.0;
-const LEFT_FACE: f32 = 56.0;
-const RIGHT_FACE: f32 = WIDTH - 56.0;
+pub const WIDTH: f32 = 1024.0;
+pub const HEIGHT: f32 = 768.0;
+pub const PADDLE_HALF_H: f32 = 48.0;
+pub const BALL_RADIUS: f32 = 8.0;
+pub const LEFT_FACE: f32 = 56.0;
+pub const RIGHT_FACE: f32 = WIDTH - 56.0;
+const PADDLE_SPEED: f32 = 420.0;
 const SERVE_VX: f32 = 320.0;
 const SERVE_VY: f32 = 210.0;
 const SPEED_UP: f32 = 1.08;
 const MAX_SPEED: f32 = 840.0;
+const MAX_DEFLECT: f32 = 0.75;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PongConfig {
     pub dt: f32,
     pub trail: usize,
@@ -35,7 +46,7 @@ impl Default for PongConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Input {
     pub left: f32,
     pub right: f32,
@@ -173,8 +184,16 @@ impl<A: Allocator> Pong<A> {
         }
     }
 
+    pub fn config(&self) -> &PongConfig {
+        &self.cfg
+    }
+
     pub fn live_particles(&self) -> usize {
         self.alloc.live_count()
+    }
+
+    pub fn particles(&self) -> impl Iterator<Item = &Particle> {
+        self.handles.iter().map(|&handle| self.alloc.get(handle))
     }
 
     pub fn checksum(&self) -> u64 {
@@ -240,24 +259,26 @@ impl<A: Allocator> Pong<A> {
         let y = self.ball.pos[1];
         if prev_x >= LEFT_FACE && x < LEFT_FACE && overlaps(y, self.left.y) {
             self.ball.pos[0] = LEFT_FACE;
-            self.boost(1.0);
+            self.deflect(1.0, self.left.y);
             1
         } else if prev_x <= RIGHT_FACE && x > RIGHT_FACE && overlaps(y, self.right.y) {
             self.ball.pos[0] = RIGHT_FACE;
-            self.boost(-1.0);
+            self.deflect(-1.0, self.right.y);
             1
         } else {
             0
         }
     }
 
-    fn boost(&mut self, dir: f32) {
+    fn deflect(&mut self, dir: f32, paddle_y: f32) {
         let speed = (self.ball.vel[0] * self.ball.vel[0] + self.ball.vel[1] * self.ball.vel[1])
             .sqrt()
             .max(1.0);
-        let scale = (speed * SPEED_UP).min(MAX_SPEED) / speed;
-        self.ball.vel[0] = dir * self.ball.vel[0].abs() * scale;
-        self.ball.vel[1] *= scale;
+        let speed = (speed * SPEED_UP).min(MAX_SPEED);
+        let offset =
+            ((self.ball.pos[1] - paddle_y) / (PADDLE_HALF_H + BALL_RADIUS)).clamp(-1.0, 1.0);
+        let vy = speed * MAX_DEFLECT * offset;
+        self.ball.vel = [dir * (speed * speed - vy * vy).sqrt(), vy];
     }
 
     fn score_if_out(&mut self) -> Option<[f32; 2]> {
@@ -317,26 +338,40 @@ impl<A: Allocator> Pong<A> {
     }
 }
 
-pub fn run<A: Allocator>(cfg: &PongConfig, frames: u32) -> Outcome {
-    let mut game: Pong<A> = Pong::new(cfg);
-    let start = Instant::now();
-    for _ in 0..frames {
-        let input = Input {
-            left: aim(game.paddle_y(Side::Left), game.ball().pos[1]),
-            right: aim(game.paddle_y(Side::Right), game.ball().pos[1]),
-        };
-        game.step(input);
-    }
-    game.finish(start.elapsed())
+pub fn run<A: Allocator>(
+    cfg: &PongConfig,
+    cpu: &CpuConfig,
+    frames: u32,
+    trace: Option<&mut dyn FnMut(Frame)>,
+) -> Outcome {
+    let mut left = Cpu::new(Side::Left, *cpu);
+    let mut right = Cpu::new(Side::Right, *cpu);
+    drive(
+        Pong::<A>::new(cfg),
+        frames as usize,
+        |game, _| Input {
+            left: left.input(game.paddle_y(Side::Left), game.ball()),
+            right: right.input(game.paddle_y(Side::Right), game.ball()),
+        },
+        trace,
+    )
 }
 
-fn aim(paddle_y: f32, ball_y: f32) -> f32 {
-    let diff = ball_y - paddle_y;
-    if diff.abs() <= 6.0 {
-        0.0
-    } else {
-        diff.signum()
+fn drive<A: Allocator>(
+    mut game: Pong<A>,
+    frames: usize,
+    mut input: impl FnMut(&Pong<A>, usize) -> Input,
+    mut trace: Option<&mut dyn FnMut(Frame)>,
+) -> Outcome {
+    let start = Instant::now();
+    for index in 0..frames {
+        let input = input(&game, index);
+        match trace.as_deref_mut() {
+            None => game.step(input),
+            Some(observe) => observe(game.timed_step(input)),
+        }
     }
+    game.finish(start.elapsed())
 }
 
 fn overlaps(ball_y: f32, paddle_y: f32) -> bool {
@@ -354,8 +389,8 @@ fn mix_f32(hash: u64, value: f32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        BALL_RADIUS, Ball, HEIGHT, Input, LEFT_FACE, PADDLE_HALF_H, Pong, PongConfig, Side, WIDTH,
-        run,
+        BALL_RADIUS, Ball, CpuConfig, HEIGHT, Input, LEFT_FACE, PADDLE_HALF_H, Pong, PongConfig,
+        Side, WIDTH, run,
     };
     use crate::alloc::{
         Allocator, arena::ArenaAllocator, heap::HeapAllocator, pool::PoolAllocator,
@@ -477,9 +512,10 @@ mod tests {
             particle_lifetime: 12,
             ..PongConfig::default()
         };
-        let heap = run::<HeapAllocator>(&cfg, 600);
-        let pool = run::<PoolAllocator>(&cfg, 600);
-        let arena = run::<ArenaAllocator>(&cfg, 600);
+        let cpu = CpuConfig::default();
+        let heap = run::<HeapAllocator>(&cfg, &cpu, 3_600, None);
+        let pool = run::<PoolAllocator>(&cfg, &cpu, 3_600, None);
+        let arena = run::<ArenaAllocator>(&cfg, &cpu, 3_600, None);
 
         assert!(heap.score[0] + heap.score[1] > 0, "{heap:?}");
         assert_eq!(pool.score, heap.score);
@@ -492,6 +528,48 @@ mod tests {
         assert_eq!(arena.retired, heap.retired);
         assert_eq!(pool.particle_updates, heap.particle_updates);
         assert!(arena.peak_reserved_bytes > pool.peak_reserved_bytes);
-        assert_eq!(run::<HeapAllocator>(&cfg, 600).checksum, heap.checksum);
+        assert_eq!(
+            run::<HeapAllocator>(&cfg, &cpu, 3_600, None).checksum,
+            heap.checksum
+        );
+    }
+
+    #[test]
+    fn cpu_variance_makes_the_computer_miss_more() {
+        let cfg = PongConfig {
+            trail: 0,
+            burst: 0,
+            ..PongConfig::default()
+        };
+        let points = |variance| {
+            let cpu = CpuConfig {
+                variance,
+                ..CpuConfig::default()
+            };
+            let score = run::<PoolAllocator>(&cfg, &cpu, 18_000, None).score;
+            score[0] + score[1]
+        };
+        let exact = points(0.0);
+        let sloppy = points(0.5);
+        assert!(sloppy > exact * 3 / 2, "exact {exact}, sloppy {sloppy}");
+    }
+
+    #[test]
+    fn paddle_hit_offset_sets_return_angle() {
+        let mut returns = Vec::new();
+        for offset in [-40.0, 0.0, 40.0] {
+            let mut game = Pong::<HeapAllocator>::new(&PongConfig::default());
+            game.set_paddle_y(Side::Left, HEIGHT / 2.0);
+            game.set_ball(Ball {
+                pos: [LEFT_FACE + 2.0, HEIGHT / 2.0 + offset],
+                vel: [-300.0, 0.0],
+            });
+            game.step(Input::default());
+            assert!(game.ball().vel[0] > 0.0, "offset {offset}");
+            returns.push(game.ball().vel[1]);
+        }
+        assert!(returns[0] < 0.0, "{returns:?}");
+        assert_eq!(returns[1], 0.0, "{returns:?}");
+        assert_eq!(returns[2], -returns[0], "{returns:?}");
     }
 }
