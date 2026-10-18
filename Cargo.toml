@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 authors = ["Angela Yu", "Tahmid Ahmed"]
+default-run = "game-engine"
 
 [profile.release]
 opt-level = 3
@@ -18,3 +19,12 @@ opt-level = 2
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
+minifb = { version = "0.29.0", default-features = false, features = ["x11"], optional = true }
+
+[features]
+default = ["window"]
+window = ["dep:minifb"]
+
+[[bin]]
+name = "play"
+required-features = ["window"]
