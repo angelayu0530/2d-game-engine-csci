@@ -1,11 +1,12 @@
 mod cpu;
+mod render;
+mod replay;
 
-use std::{
-    io::{self, BufRead, Write},
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 pub use cpu::{Cpu, CpuConfig};
+pub use render::draw;
+pub use replay::{Replay, replay};
 
 use crate::{alloc::Allocator, particle::Particle};
 
@@ -21,7 +22,6 @@ const SERVE_VY: f32 = 210.0;
 const SPEED_UP: f32 = 1.08;
 const MAX_SPEED: f32 = 840.0;
 const MAX_DEFLECT: f32 = 0.75;
-const REPLAY_MAGIC: &str = "pong-replay v1";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PongConfig {
@@ -180,6 +180,10 @@ impl<A: Allocator> Pong<A> {
             Side::Left => self.left.y = y,
             Side::Right => self.right.y = y,
         }
+    }
+
+    pub fn config(&self) -> &PongConfig {
+        &self.cfg
     }
 
     pub fn live_particles(&self) -> usize {
@@ -347,81 +351,6 @@ pub fn run<A: Allocator>(cfg: &PongConfig, cpu: &CpuConfig, frames: u32) -> Outc
     game.finish(start.elapsed())
 }
 
-pub fn replay<A: Allocator>(replay: &Replay) -> Outcome {
-    let mut game: Pong<A> = Pong::new(&replay.cfg);
-    let start = Instant::now();
-    for &input in &replay.inputs {
-        game.step(input);
-    }
-    game.finish(start.elapsed())
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Replay {
-    pub cfg: PongConfig,
-    pub inputs: Vec<Input>,
-}
-
-impl Replay {
-    pub fn write(&self, mut out: impl Write) -> io::Result<()> {
-        let cfg = &self.cfg;
-        writeln!(out, "{REPLAY_MAGIC}")?;
-        writeln!(
-            out,
-            "dt={} trail={} burst={} lifetime={} seed={}",
-            cfg.dt, cfg.trail, cfg.burst, cfg.particle_lifetime, cfg.seed
-        )?;
-        for input in &self.inputs {
-            writeln!(out, "{} {}", input.left, input.right)?;
-        }
-        out.flush()
-    }
-
-    pub fn read(input: impl BufRead) -> io::Result<Self> {
-        let mut lines = input.lines();
-        let mut next = || lines.next().transpose();
-        if next()?.as_deref() != Some(REPLAY_MAGIC) {
-            return Err(invalid(format!("missing `{REPLAY_MAGIC}` header")));
-        }
-        let header = next()?.ok_or_else(|| invalid("missing config line".into()))?;
-        let mut cfg = PongConfig::default();
-        for field in header.split_whitespace() {
-            let (key, value) = field
-                .split_once('=')
-                .ok_or_else(|| invalid(format!("bad config field `{field}`")))?;
-            match key {
-                "dt" => cfg.dt = parse(value)?,
-                "trail" => cfg.trail = parse(value)?,
-                "burst" => cfg.burst = parse(value)?,
-                "lifetime" => cfg.particle_lifetime = parse(value)?,
-                "seed" => cfg.seed = parse(value)?,
-                _ => return Err(invalid(format!("unknown config field `{key}`"))),
-            }
-        }
-        let mut inputs = Vec::new();
-        while let Some(line) = next()? {
-            let (left, right) = line
-                .split_once(' ')
-                .ok_or_else(|| invalid(format!("bad input line `{line}`")))?;
-            inputs.push(Input {
-                left: parse(left)?,
-                right: parse(right)?,
-            });
-        }
-        Ok(Self { cfg, inputs })
-    }
-}
-
-fn parse<T: std::str::FromStr>(value: &str) -> io::Result<T> {
-    value
-        .parse()
-        .map_err(|_| invalid(format!("bad value `{value}`")))
-}
-
-fn invalid(message: String) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message)
-}
-
 fn overlaps(ball_y: f32, paddle_y: f32) -> bool {
     (ball_y - paddle_y).abs() <= PADDLE_HALF_H + BALL_RADIUS
 }
@@ -437,8 +366,8 @@ fn mix_f32(hash: u64, value: f32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        BALL_RADIUS, Ball, Cpu, CpuConfig, HEIGHT, Input, LEFT_FACE, PADDLE_HALF_H, Pong,
-        PongConfig, Replay, Side, WIDTH, replay, run,
+        BALL_RADIUS, Ball, CpuConfig, HEIGHT, Input, LEFT_FACE, PADDLE_HALF_H, Pong, PongConfig,
+        Side, WIDTH, run,
     };
     use crate::alloc::{
         Allocator, arena::ArenaAllocator, heap::HeapAllocator, pool::PoolAllocator,
@@ -619,47 +548,5 @@ mod tests {
         assert!(returns[0] < 0.0, "{returns:?}");
         assert_eq!(returns[1], 0.0, "{returns:?}");
         assert_eq!(returns[2], -returns[0], "{returns:?}");
-    }
-
-    #[test]
-    fn recorded_match_replays_identically_on_every_allocator() {
-        let cfg = PongConfig {
-            trail: 6,
-            burst: 5,
-            particle_lifetime: 20,
-            ..PongConfig::default()
-        };
-        let mut live = Pong::<HeapAllocator>::new(&cfg);
-        let mut cpu = Cpu::new(Side::Right, CpuConfig::default());
-        let mut inputs = Vec::new();
-        for frame in 0..1_800u32 {
-            let input = Input {
-                left: [1.0, 0.0, -1.0, 1.0 / 3.0][(frame / 37 % 4) as usize],
-                right: cpu.input(live.paddle_y(Side::Right), live.ball()),
-            };
-            live.step(input);
-            inputs.push(input);
-        }
-        assert!(live.score()[0] + live.score()[1] > 0);
-
-        let mut bytes = Vec::new();
-        Replay { cfg, inputs }.write(&mut bytes).unwrap();
-        let recorded = Replay::read(bytes.as_slice()).unwrap();
-        assert_eq!(recorded.cfg, cfg);
-
-        for outcome in [
-            replay::<HeapAllocator>(&recorded),
-            replay::<PoolAllocator>(&recorded),
-            replay::<ArenaAllocator>(&recorded),
-        ] {
-            assert_eq!(outcome.score, live.score());
-            assert_eq!(outcome.checksum, live.checksum());
-        }
-    }
-
-    #[test]
-    fn replay_rejects_foreign_files() {
-        assert!(Replay::read(&b"allocator,count\n1,2\n"[..]).is_err());
-        assert!(Replay::read(&b"pong-replay v1\ndt=0.1 seed=1\n0 nope\n"[..]).is_err());
     }
 }

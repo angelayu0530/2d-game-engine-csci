@@ -1,9 +1,10 @@
 use std::hint::black_box;
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use game_engine::{
-    alloc::{Allocator, arena::ArenaAllocator, heap::HeapAllocator, pool::PoolAllocator},
+    alloc::{Allocator, Backend},
     memory::peak_rss_bytes,
+    with_allocator,
     workload::{WorkloadConfig, run},
 };
 
@@ -29,23 +30,12 @@ struct Cli {
     no_header: bool,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum Backend {
-    Heap,
-    Pool,
-    Arena,
-}
-
 fn main() {
     let cli = Cli::parse();
     if cfg!(debug_assertions) {
         eprintln!("warning: debug build; timings are not representative, use --release");
     }
-    match cli.allocator {
-        Backend::Heap => bench::<HeapAllocator>(&cli),
-        Backend::Pool => bench::<PoolAllocator>(&cli),
-        Backend::Arena => bench::<ArenaAllocator>(&cli),
-    }
+    with_allocator!(cli.allocator, bench(&cli));
 }
 
 fn bench<A: Allocator>(cli: &Cli) {

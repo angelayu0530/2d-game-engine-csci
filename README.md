@@ -20,7 +20,7 @@ Cargo.toml              package manifest; release profile used for all measureme
 src/lib.rs              allocators, workload, and peak RSS
 src/main.rs             benchmark CLI: one allocator per process, CSV rows on stdout
 src/particle.rs         fixed-size Particle (pos, vel, lifetime), deterministic spawn, update
-src/alloc/mod.rs        Allocator trait shared by every backend
+src/alloc/mod.rs        Allocator trait, Backend (CLI --allocator) and with_allocator! dispatch
 src/alloc/heap.rs       baseline: one allocation per object, freed individually
 src/alloc/pool.rs       fixed-size pool: preallocated slots + free list
 src/alloc/arena.rs      linear arena: bump cursor through blocks, reclaim all at once
@@ -29,8 +29,10 @@ src/memory.rs           peak RSS measurement
 src/canvas.rs           software framebuffer: rects and score digits
 src/window/mod.rs       WindowConfig, Game trait, run loop, fixed-step clock (minifb, `window` feature)
 src/window/input.rs     backend-neutral Key/MouseButton and per-update Controls snapshot
-src/pong/mod.rs         deterministic Pong sim, match recording/replay
+src/pong/mod.rs         deterministic Pong sim and CPU-vs-CPU match runner
 src/pong/cpu.rs         computer opponent: Cpu + CpuConfig, seeded aim variance
+src/pong/render.rs      draws a Pong state onto a Canvas
+src/pong/replay.rs      match recording format and replay runner
 src/bin/play.rs         playable Pong in a window; records the match with --record
 src/bin/pong.rs         headless Pong benchmark: CPU vs. CPU or a recorded match
 results/                CSV output and plots (gitignored except this folder)

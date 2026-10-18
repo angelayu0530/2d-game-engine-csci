@@ -1,10 +1,11 @@
 use std::{fs::File, hint::black_box, io::BufReader, path::PathBuf};
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use game_engine::{
-    alloc::{Allocator, arena::ArenaAllocator, heap::HeapAllocator, pool::PoolAllocator},
+    alloc::{Allocator, Backend},
     memory::peak_rss_bytes,
     pong::{CpuConfig, Outcome, PongConfig, Replay, replay, run},
+    with_allocator,
 };
 
 const CSV_HEADER: &str = "allocator,frames,trail,burst,lifetime,trial,score_left,score_right,\
@@ -48,13 +49,6 @@ struct Cli {
     cpu_variance: f32,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum Backend {
-    Heap,
-    Pool,
-    Arena,
-}
-
 fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
     if cfg!(debug_assertions) {
@@ -65,11 +59,7 @@ fn main() -> std::io::Result<()> {
         None => None,
     };
     let recorded = recorded.as_ref();
-    match cli.allocator {
-        Backend::Heap => play::<HeapAllocator>(&cli, recorded),
-        Backend::Pool => play::<PoolAllocator>(&cli, recorded),
-        Backend::Arena => play::<ArenaAllocator>(&cli, recorded),
-    }
+    with_allocator!(cli.allocator, play(&cli, recorded));
     Ok(())
 }
 
