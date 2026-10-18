@@ -1,9 +1,6 @@
-use std::{
-    io::{self, BufRead, Write},
-    time::Instant,
-};
+use std::io::{self, BufRead, Write};
 
-use super::{Input, Outcome, Pong, PongConfig};
+use super::{Frame, Input, Outcome, Pong, PongConfig, drive};
 use crate::alloc::Allocator;
 
 const MAGIC: &str = "pong-replay v1";
@@ -64,13 +61,13 @@ impl Replay {
     }
 }
 
-pub fn replay<A: Allocator>(replay: &Replay) -> Outcome {
-    let mut game: Pong<A> = Pong::new(&replay.cfg);
-    let start = Instant::now();
-    for &input in &replay.inputs {
-        game.step(input);
-    }
-    game.finish(start.elapsed())
+pub fn replay<A: Allocator>(replay: &Replay, trace: Option<&mut dyn FnMut(Frame)>) -> Outcome {
+    drive(
+        Pong::<A>::new(&replay.cfg),
+        replay.inputs.len(),
+        |_, index| replay.inputs[index],
+        trace,
+    )
 }
 
 fn parse<T: std::str::FromStr>(value: &str) -> io::Result<T> {
@@ -118,9 +115,9 @@ mod tests {
         assert_eq!(recorded.cfg, cfg);
 
         for outcome in [
-            replay::<HeapAllocator>(&recorded),
-            replay::<PoolAllocator>(&recorded),
-            replay::<ArenaAllocator>(&recorded),
+            replay::<HeapAllocator>(&recorded, None),
+            replay::<PoolAllocator>(&recorded, None),
+            replay::<ArenaAllocator>(&recorded, None),
         ] {
             assert_eq!(outcome.score, live.score());
             assert_eq!(outcome.checksum, live.checksum());

@@ -1,12 +1,14 @@
 mod cpu;
 mod render;
 mod replay;
+mod trace;
 
 use std::time::{Duration, Instant};
 
 pub use cpu::{Cpu, CpuConfig};
 pub use render::draw;
 pub use replay::{Replay, replay};
+pub use trace::{Frame, TRACE_HEADER, TraceMode};
 
 use crate::{alloc::Allocator, particle::Particle};
 
@@ -336,17 +338,38 @@ impl<A: Allocator> Pong<A> {
     }
 }
 
-pub fn run<A: Allocator>(cfg: &PongConfig, cpu: &CpuConfig, frames: u32) -> Outcome {
-    let mut game: Pong<A> = Pong::new(cfg);
+pub fn run<A: Allocator>(
+    cfg: &PongConfig,
+    cpu: &CpuConfig,
+    frames: u32,
+    trace: Option<&mut dyn FnMut(Frame)>,
+) -> Outcome {
     let mut left = Cpu::new(Side::Left, *cpu);
     let mut right = Cpu::new(Side::Right, *cpu);
-    let start = Instant::now();
-    for _ in 0..frames {
-        let input = Input {
+    drive(
+        Pong::<A>::new(cfg),
+        frames as usize,
+        |game, _| Input {
             left: left.input(game.paddle_y(Side::Left), game.ball()),
             right: right.input(game.paddle_y(Side::Right), game.ball()),
-        };
-        game.step(input);
+        },
+        trace,
+    )
+}
+
+fn drive<A: Allocator>(
+    mut game: Pong<A>,
+    frames: usize,
+    mut input: impl FnMut(&Pong<A>, usize) -> Input,
+    mut trace: Option<&mut dyn FnMut(Frame)>,
+) -> Outcome {
+    let start = Instant::now();
+    for index in 0..frames {
+        let input = input(&game, index);
+        match trace.as_deref_mut() {
+            None => game.step(input),
+            Some(observe) => observe(game.timed_step(input)),
+        }
     }
     game.finish(start.elapsed())
 }
@@ -490,9 +513,9 @@ mod tests {
             ..PongConfig::default()
         };
         let cpu = CpuConfig::default();
-        let heap = run::<HeapAllocator>(&cfg, &cpu, 3_600);
-        let pool = run::<PoolAllocator>(&cfg, &cpu, 3_600);
-        let arena = run::<ArenaAllocator>(&cfg, &cpu, 3_600);
+        let heap = run::<HeapAllocator>(&cfg, &cpu, 3_600, None);
+        let pool = run::<PoolAllocator>(&cfg, &cpu, 3_600, None);
+        let arena = run::<ArenaAllocator>(&cfg, &cpu, 3_600, None);
 
         assert!(heap.score[0] + heap.score[1] > 0, "{heap:?}");
         assert_eq!(pool.score, heap.score);
@@ -506,7 +529,7 @@ mod tests {
         assert_eq!(pool.particle_updates, heap.particle_updates);
         assert!(arena.peak_reserved_bytes > pool.peak_reserved_bytes);
         assert_eq!(
-            run::<HeapAllocator>(&cfg, &cpu, 3_600).checksum,
+            run::<HeapAllocator>(&cfg, &cpu, 3_600, None).checksum,
             heap.checksum
         );
     }
@@ -523,7 +546,7 @@ mod tests {
                 variance,
                 ..CpuConfig::default()
             };
-            let score = run::<PoolAllocator>(&cfg, &cpu, 18_000).score;
+            let score = run::<PoolAllocator>(&cfg, &cpu, 18_000, None).score;
             score[0] + score[1]
         };
         let exact = points(0.0);

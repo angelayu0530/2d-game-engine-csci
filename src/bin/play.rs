@@ -1,10 +1,18 @@
-use std::{error::Error, fs::File, io::BufWriter, path::PathBuf};
+use std::{
+    error::Error,
+    fs::File,
+    io::{BufWriter, Write},
+    path::PathBuf,
+};
 
 use clap::Parser;
 use game_engine::{
     alloc::{Allocator, Backend},
     canvas::Canvas,
-    pong::{self, Cpu, CpuConfig, HEIGHT, Input, Pong, PongConfig, Replay, Side, WIDTH},
+    pong::{
+        self, Cpu, CpuConfig, Frame, HEIGHT, Input, Pong, PongConfig, Replay, Side, TRACE_HEADER,
+        TraceMode, WIDTH,
+    },
     window::{self, Controls, Game, Key, WindowConfig},
     with_allocator,
 };
@@ -32,9 +40,20 @@ struct Cli {
     cpu_variance: f32,
     #[arg(
         long,
+        default_value_t = 11,
+        help = "End the match when either side reaches this score; 0 to play until Esc"
+    )]
+    to: u32,
+    #[arg(
+        long,
         help = "Write every frame's input here on exit, for `pong --replay`"
     )]
     record: Option<PathBuf>,
+    #[arg(
+        long,
+        help = "Write one CSV row per played frame here on exit, for scripts/plot.py"
+    )]
+    trace: Option<PathBuf>,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -45,11 +64,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 struct PongGame<A: Allocator> {
     game: Pong<A>,
     cpu: Option<Cpu>,
+    to: u32,
     inputs: Vec<Input>,
+    frames: Vec<Frame>,
 }
 
 impl<A: Allocator> Game for PongGame<A> {
     fn update(&mut self, controls: &Controls, _dt: f32) {
+        if !self.running() {
+            return;
+        }
         let input = match &mut self.cpu {
             None => Input {
                 left: controls.axis(&[Key::W], &[Key::S]),
@@ -60,7 +84,7 @@ impl<A: Allocator> Game for PongGame<A> {
                 right: cpu.input(self.game.paddle_y(Side::Right), self.game.ball()),
             },
         };
-        self.game.step(input);
+        self.frames.push(self.game.timed_step(input));
         self.inputs.push(input);
     }
 
@@ -70,6 +94,11 @@ impl<A: Allocator> Game for PongGame<A> {
 
     fn status(&self) -> Option<String> {
         Some(format!("{} particles", self.game.live_particles()))
+    }
+
+    fn running(&self) -> bool {
+        let [left, right] = self.game.score();
+        self.to == 0 || left.max(right) < self.to
     }
 }
 
@@ -100,7 +129,9 @@ fn play<A: Allocator>(cli: &Cli) -> Result<(), Box<dyn Error>> {
                 },
             )
         }),
+        to: cli.to,
         inputs: Vec::new(),
+        frames: Vec::new(),
     };
     window::run(&config, &mut pong)?;
 
@@ -109,6 +140,19 @@ fn play<A: Allocator>(cli: &Cli) -> Result<(), Box<dyn Error>> {
         "final score {left} : {right} after {} frames",
         pong.inputs.len()
     );
+    if let Some(path) = &cli.trace {
+        let mut out = BufWriter::new(File::create(path)?);
+        writeln!(out, "{TRACE_HEADER}")?;
+        for frame in &pong.frames {
+            frame.write_csv(&mut out, TraceMode::HumanLive, A::NAME, 0)?;
+        }
+        out.flush()?;
+        eprintln!(
+            "wrote {} frame rows to {}",
+            pong.frames.len(),
+            path.display()
+        );
+    }
     if let Some(path) = &cli.record {
         Replay {
             cfg,

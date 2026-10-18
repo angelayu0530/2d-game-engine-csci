@@ -33,10 +33,12 @@ src/pong/mod.rs         deterministic Pong sim and CPU-vs-CPU match runner
 src/pong/cpu.rs         computer opponent: Cpu + CpuConfig, seeded aim variance
 src/pong/render.rs      draws a Pong state onto a Canvas
 src/pong/replay.rs      match recording format and replay runner
+src/pong/trace.rs       per-frame timing/memory sample (Frame) and its CSV row
 src/bin/play.rs         playable Pong in a window; records the match with --record
 src/bin/pong.rs         headless Pong benchmark: CPU vs. CPU or a recorded match
 results/                CSV output and plots (gitignored except this folder)
 scripts/bench.py        runs every allocator N times per count, writes CSV, prints a summary
+scripts/plot.py         plots bench.csv vs. object count, or Pong --trace CSVs vs. frame
 ```
 
 ## Workload
@@ -89,15 +91,16 @@ allocators at the same count.
 ### Pong
 
 ```sh
-cargo run --release --bin play -- --allocator pool --record results/match.pongrec
+cargo run --release --bin play -- --allocator pool --record results/match.pongrec --trace results/live-pool.csv
 cargo run --release --bin pong -- --allocator arena --replay results/match.pongrec --trials 10
 cargo run --release --bin pong -- --allocator heap --frames 3600 --trials 10
 ```
 
 `play` opens a 1024x768 window. W/S or Up/Down move the left paddle against
-the computer; `--two-player` puts the right paddle on Up/Down. Esc quits.
-The window title shows frame rate, live particles, and mean simulation time
-per update.
+the computer; `--two-player` puts the right paddle on Up/Down. The match ends
+when either side reaches `--to` points (default 11; `0` plays until Esc), and
+Esc quits early. The window title shows frame rate, live particles, and mean
+simulation time per update.
 
 The simulation runs at a fixed 60 Hz step and is deterministic, so a match
 is fully described by its config and per-frame input. `--record` writes both
@@ -153,6 +156,30 @@ fn main() -> Result<(), window::Error> {
 - `Window` and `FixedStep` stay public for a custom loop.
 - minifb is referenced only inside `src/window/`, so swapping the backend
   does not touch game code.
+
+## Full Test
+
+```bash
+cargo build --release
+
+# 1. Play one match (ends itself at 11 points, or end early by hitting Esc)
+./target/release/play --record results/match.pongrec
+
+# 2. Benchmark it, plus CPU vs CPU, on every allocator
+for a in heap pool arena; do
+  ./target/release/pong --allocator $a --replay results/match.pongrec \
+    --warmups 2 --trials 10 --trace results/trace-human-$a.csv > results/pong-human-$a.csv
+  ./target/release/pong --allocator $a --frames 3600 \
+    --warmups 2 --trials 10 --trace results/trace-cpu-$a.csv > results/pong-cpu-$a.csv
+done
+
+# 3. Check all allocators played the same match: expect one checksum per line
+for m in human cpu; do echo $m; awk -F, 'FNR>1 {print $14}' results/pong-$m-*.csv | sort -u; done
+
+# 4. Plot
+python3 scripts/plot.py --csv results/trace-*.csv
+open results/trace.png
+```
 
 ## Status
 

@@ -1,10 +1,15 @@
-use std::{fs::File, hint::black_box, io::BufReader, path::PathBuf};
+use std::{
+    fs::File,
+    hint::black_box,
+    io::{self, BufReader, BufWriter, Write},
+    path::PathBuf,
+};
 
 use clap::Parser;
 use game_engine::{
     alloc::{Allocator, Backend},
     memory::peak_rss_bytes,
-    pong::{CpuConfig, Outcome, PongConfig, Replay, replay, run},
+    pong::{CpuConfig, Frame, Outcome, PongConfig, Replay, TRACE_HEADER, TraceMode, replay, run},
     with_allocator,
 };
 
@@ -47,9 +52,14 @@ struct Cli {
         help = "Computer aim error per approach, as a fraction of paddle reach; 0 for none"
     )]
     cpu_variance: f32,
+    #[arg(
+        long,
+        help = "Write one CSV row per frame of every measured trial here, for scripts/plot.py"
+    )]
+    trace: Option<PathBuf>,
 }
 
-fn main() -> std::io::Result<()> {
+fn main() -> io::Result<()> {
     let cli = Cli::parse();
     if cfg!(debug_assertions) {
         eprintln!("warning: debug build; timings are not representative, use --release");
@@ -59,11 +69,10 @@ fn main() -> std::io::Result<()> {
         None => None,
     };
     let recorded = recorded.as_ref();
-    with_allocator!(cli.allocator, play(&cli, recorded));
-    Ok(())
+    with_allocator!(cli.allocator, play(&cli, recorded))
 }
 
-fn play<A: Allocator>(cli: &Cli, recorded: Option<&Replay>) {
+fn play<A: Allocator>(cli: &Cli, recorded: Option<&Replay>) -> io::Result<()> {
     let (cfg, frames) = match recorded {
         Some(recorded) => (recorded.cfg, recorded.inputs.len()),
         None => (
@@ -82,20 +91,35 @@ fn play<A: Allocator>(cli: &Cli, recorded: Option<&Replay>) {
         seed: cli.seed,
         ..CpuConfig::default()
     };
-    let match_once = || -> Outcome {
+    let match_once = |trace: Option<&mut dyn FnMut(Frame)>| -> Outcome {
         match recorded {
-            Some(recorded) => replay::<A>(recorded),
-            None => run::<A>(&cfg, &cpu, cli.frames),
+            Some(recorded) => replay::<A>(recorded, trace),
+            None => run::<A>(&cfg, &cpu, cli.frames, trace),
         }
     };
+    let mut trace_out = match &cli.trace {
+        Some(path) => {
+            let mut out = BufWriter::new(File::create(path)?);
+            writeln!(out, "{TRACE_HEADER}")?;
+            Some(out)
+        }
+        None => None,
+    };
+    let mut trace_buf: Vec<Frame> =
+        Vec::with_capacity(if trace_out.is_some() { frames } else { 0 });
+
     for _ in 0..cli.warmups {
-        black_box(match_once());
+        black_box(match_once(None));
     }
     if !cli.no_header {
         println!("{CSV_HEADER}");
     }
     for trial in 0..cli.trials {
-        let result = match_once();
+        trace_buf.clear();
+        let result = match &mut trace_out {
+            Some(_) => match_once(Some(&mut |frame| trace_buf.push(frame))),
+            None => match_once(None),
+        };
         println!(
             "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             A::NAME,
@@ -116,5 +140,18 @@ fn play<A: Allocator>(cli: &Cli, recorded: Option<&Replay>) {
             result.elapsed.as_nanos(),
             peak_rss_bytes(),
         );
+        if let Some(out) = &mut trace_out {
+            let mode = match recorded {
+                Some(_) => TraceMode::HumanReplay,
+                None => TraceMode::CpuVsCpu,
+            };
+            for frame in &trace_buf {
+                frame.write_csv(out, mode, A::NAME, trial)?;
+            }
+        }
     }
+    if let Some(mut out) = trace_out {
+        out.flush()?;
+    }
+    Ok(())
 }
