@@ -3,3 +3,7 @@ Cargo.lock.orig
 results/*.csv
 results/*.png
 .DS_Store
+
+# Local terminal adventure saves
+*.save
+*.save.*.tmp
