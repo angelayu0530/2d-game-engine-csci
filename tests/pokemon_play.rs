@@ -67,9 +67,7 @@ fn actual_terminal_can_explore_encounter_battle_catch_and_flee() {
             if !fled {
                 fled = true;
                 Action::Run
-            } else if !won {
-                Action::Attack
-            } else if wild.hp * 2 > wild.max_hp() {
+            } else if !won || wild.hp * 2 > wild.max_hp() {
                 Action::Attack
             } else {
                 Action::Catch
