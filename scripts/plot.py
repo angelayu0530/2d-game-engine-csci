@@ -17,12 +17,15 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent.parent
 ALLOCATORS = ["heap", "pool", "arena"]
-COLORS = {"heap": "#4c78a8", "pool": "#f58518", "arena": "#54a24b"}
+COLORS = {"heap": "#fb6a4a", "pool": "#de2d26", "arena": "#a50f15"}
 MARKERS = {"heap": "o", "pool": "s", "arena": "^"}
+LINESTYLES = {"heap": "solid", "pool": "dashed", "arena": "dashdot"}
 REQUIRED = ("allocator", "count", "total_ns", "peak_rss_bytes")
 TRACE_REQUIRED = ("allocator", "trial", "frame", "step_ns", "live", "reserved_bytes")
-MODES = ["cpu-vs-cpu", "human-replay", "human-live"]
+MODES = ["cpu-vs-cpu", "human-replay", "human-live", "pokemon-auto", "pokemon-replay"]
 MODE_TITLES = {
+    "pokemon-auto": "Pokemon automated expedition",
+    "pokemon-replay": "Pokemon recorded player session",
     "cpu-vs-cpu": "CPU vs CPU",
     "human-replay": "human match, replayed headless",
     "human-live": "human match, live window",
@@ -33,31 +36,40 @@ SMOOTH_FRAMES = 30
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Plot median runtime and peak RSS from a bench.csv against object count, "
-        "or per-frame step time and memory from Pong --trace CSVs."
+        "the same pair from a Pokemon or Pong summary CSV, "
+        "or per-frame step time and memory from --trace CSVs."
     )
     parser.add_argument(
         "--csv", type=Path, nargs="+", default=[ROOT / "results" / "bench.csv"]
     )
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--presentation", action="store_true", help="Wide slide layout with benchmark title and metric footer (trace CSVs)")
+    parser.add_argument("--by-allocator", action="store_true", help="Separate allocator columns with shared metric scales (trace CSVs)")
     args = parser.parse_args()
 
     tables = [load_rows(path) for path in args.csv]
     if all(is_trace(fields) for fields, _ in tables):
         out = args.out or ROOT / "results" / "trace.png"
-        traces = trace_series(args.csv, [rows for _, rows in tables])
-        plot_trace(traces, out)
+        try:
+            traces = trace_series(args.csv, [rows for _, rows in tables])
+        except ValueError as error:
+            sys.exit(str(error))
+        plot_trace(traces, out, presentation=args.presentation, by_allocator=args.by_allocator)
         print_trace_table(traces)
-    elif len(tables) == 1 and not is_trace(tables[0][0]):
-        fields, rows = tables[0]
-        missing = [name for name in REQUIRED if name not in fields]
-        if missing:
-            sys.exit(f"{args.csv[0]} is missing columns: {', '.join(missing)}")
+    elif len(tables) == 1 and is_bench(tables[0][0]):
+        _, rows = tables[0]
         out = args.out or ROOT / "results" / "bench.png"
         counts, allocators, grouped = series(rows)
         plot(counts, allocators, grouped, out)
         print_table(counts, allocators, grouped)
+    elif len(tables) == 1 and is_game_summary(tables[0][0]):
+        out = args.out or args.csv[0].with_suffix(".png")
+        write_game_summary(tables[0][1], out)
+    elif len(tables) == 1:
+        missing = [name for name in REQUIRED if name not in tables[0][0]]
+        sys.exit(f"{args.csv[0]} is missing columns: {', '.join(missing)}")
     else:
-        sys.exit("pass one bench.csv, or one or more Pong --trace CSVs")
+        sys.exit("pass one bench.csv, one game summary CSV, or one or more trace CSVs")
     print(f"wrote {out}", file=sys.stderr)
 
 
@@ -77,6 +89,54 @@ def is_trace(fields) -> bool:
     return all(name in fields for name in TRACE_REQUIRED)
 
 
+def is_bench(fields) -> bool:
+    return all(name in fields for name in REQUIRED)
+
+
+def is_game_summary(fields) -> bool:
+    return {"allocator", "sim_ns", "peak_rss_bytes"} <= set(fields) and (
+        "peak_live" in fields or "burst" in fields
+    )
+
+
+def scale_axis(rows):
+    def values(name):
+        if not rows or name not in rows[0]:
+            return set()
+        return {int(row[name]) for row in rows}
+
+    live = values("peak_live")
+    burst = values("burst")
+    if len(live) >= 2 and live == burst:
+        return "peak_live", "object count"
+    if len(live) >= 2:
+        return "peak_live", "peak live particles"
+    if len(burst) >= 2:
+        return "burst", "effects per action"
+    return None, None
+
+
+def write_game_summary(rows, out: Path) -> None:
+    field, xlabel = scale_axis(rows)
+    if field is None:
+        sys.exit(
+            "summary CSV has one particle load. "
+            "Pass trace CSVs to plot step time, live particles, and reserved memory."
+        )
+    counts, allocators, grouped = series(rows, field)
+    plot(
+        counts,
+        allocators,
+        grouped,
+        out,
+        time_field="sim_ns",
+        time_label="median simulation time (ms)",
+        xlabel=xlabel,
+        log_y=True,
+    )
+    print_table(counts, allocators, grouped, time_field="sim_ns", time_header="sim ms")
+
+
 def trace_series(paths, tables):
     groups = defaultdict(list)
     for path, rows in zip(paths, tables):
@@ -88,28 +148,31 @@ def trace_series(paths, tables):
             groups[(mode, allocator)].append((path, picked))
     series = []
     for (mode, allocator), sources in groups.items():
+        trials = defaultdict(dict)
         for path, rows in sources:
-            label = allocator if len(sources) == 1 else f"{allocator} ({path.stem})"
-            frames = defaultdict(list)
             for row in rows:
-                frames[int(row["frame"])].append(row)
-            xs = sorted(frames)
-            first = [frames[x][0] for x in xs]
-            series.append(
-                {
-                    "mode": mode,
-                    "label": label,
-                    "allocator": allocator,
-                    "frames": xs,
-                    "step_us": [
-                        statistics.median(int(r["step_ns"]) for r in frames[x]) / 1e3 for x in xs
-                    ],
-                    "live": [int(r["live"]) for r in first],
-                    "reserved_kb": [int(r["reserved_bytes"]) / 1e3 for r in first],
-                    "score": [(int(r["score_left"]), int(r["score_right"])) for r in first],
-                    "trials": len({r["trial"] for r in rows}),
-                }
-            )
+                key = (str(path), row["trial"])
+                frame = int(row["frame"])
+                if frame in trials[key]:
+                    raise ValueError(f"Duplicate frame {frame} in {path}, trial {row['trial']}")
+                trials[key][frame] = row
+        reference = next(iter(trials.values()))
+        xs = sorted(reference)
+        def state(row):
+            score = ((int(row["wins"]), int(row["catches"])) if mode.startswith("pokemon-")
+                     else (int(row["score_left"]), int(row["score_right"])))
+            return (int(row["live"]), score)
+        for trial in trials.values():
+            if sorted(trial) != xs or any(state(trial[x]) != state(reference[x]) for x in xs):
+                raise ValueError(f"{mode}/{allocator}: traces contain different workloads. Plot each particle load or session separately.")
+        series.append({
+            "mode": mode, "label": allocator, "allocator": allocator, "frames": xs,
+            "step_us": [statistics.median(int(t[x]["step_ns"]) for t in trials.values()) / 1e3 for x in xs],
+            "live": [state(reference[x])[0] for x in xs],
+            "reserved_kb": [statistics.median(int(t[x]["reserved_bytes"]) for t in trials.values()) / 1e3 for x in xs],
+            "score": [state(reference[x])[1] for x in xs],
+            "trials": len(trials),
+        })
     mode_order = {name: i for i, name in enumerate(MODES)}
     alloc_order = {name: i for i, name in enumerate(ALLOCATORS)}
     series.sort(
@@ -129,22 +192,32 @@ def rolling_median(values, window):
     ]
 
 
-def plot_trace(series, out: Path) -> None:
+def plot_trace(series, out: Path, presentation=False, by_allocator=False) -> None:
     modes = list(dict.fromkeys(s["mode"] for s in series))
+    columns = ([[s] for s in series] if by_allocator else
+               [[s for s in series if s["mode"] == mode] for mode in modes])
     fig, axes = plt.subplots(
         3,
-        len(modes),
-        figsize=(7 * len(modes), 8.5),
+        len(columns),
+        figsize=((13.333, 7.5) if presentation else ((10, 8.5) if len(columns) == 1 else (7 * len(columns), 8.5))),
         sharey="row",
         squeeze=False,
-        layout="constrained",
+        layout=None if presentation else "constrained",
     )
-    for col, mode in enumerate(modes):
-        column = [s for s in series if s["mode"] == mode]
+    if presentation:
+        fig.subplots_adjust(left=0.11, right=0.97, top=0.79, bottom=0.11, hspace=0.25, wspace=0.07)
+        title = "Pokémon" if all(mode.startswith("pokemon-") for mode in modes) else "Game"
+        if all(not mode.startswith("pokemon-") for mode in modes):
+            title = "Pong"
+        fig.text(0.025, 0.955, f"{title} Benchmark Results", fontfamily="serif", fontsize=36, va="top")
+        fig.add_artist(plt.Line2D([0, 1], [0.855, 0.855], transform=fig.transFigure, color="0.3", linewidth=1))
+        fig.text(0.025, 0.025, "Step time (top)  •  Live particles (middle)  •  Reserved memory (bottom)",
+                 fontfamily="serif", fontsize=19, va="bottom")
+    for col, column in enumerate(columns):
+        mode = column[0]["mode"]
         top, middle, bottom = axes[0][col], axes[1][col], axes[2][col]
         for index, s in enumerate(column):
             color = COLORS.get(s["allocator"], f"C{index}") if len(column) <= 3 else f"C{index}"
-            top.plot(s["frames"], s["step_us"], color=color, alpha=0.15, linewidth=0.6)
             top.plot(
                 s["frames"],
                 rolling_median(s["step_us"], SMOOTH_FRAMES),
@@ -152,8 +225,10 @@ def plot_trace(series, out: Path) -> None:
                 linewidth=1.6,
                 label=s["label"],
             )
-            middle.plot(s["frames"], s["live"], color=color, linewidth=1.2, label=s["label"])
-            bottom.plot(s["frames"], s["reserved_kb"], color=color, linewidth=1.4, label=s["label"])
+            live = rolling_median(s["live"], SMOOTH_FRAMES) if mode.startswith("pokemon-") else s["live"]
+            reserved = rolling_median(s["reserved_kb"], SMOOTH_FRAMES) if mode.startswith("pokemon-") else s["reserved_kb"]
+            middle.plot(s["frames"], live, color=color, linewidth=1.4, label=s["label"])
+            bottom.plot(s["frames"], reserved, color=color, linewidth=1.4, label=s["label"])
 
         reference = column[0]
         points = [
@@ -164,21 +239,36 @@ def plot_trace(series, out: Path) -> None:
             if cur != prev
         ]
         final = reference["score"][-1]
-        top.set_title(
-            f"{MODE_TITLES.get(mode, mode)}\n"
-            f"{len(reference['frames'])} frames, final {final[0]}:{final[1]}"
-        )
+        summary = (f"{len(reference['frames'])} turns, {final[0]} wins, {final[1]} catches"
+                   if mode.startswith("pokemon-") else
+                   f"{len(reference['frames'])} frames, final {final[0]}:{final[1]}")
+        trial_counts = {s["trials"] for s in column}
+        trial_note = f", median of {next(iter(trial_counts))} trials" if len(trial_counts) == 1 and next(iter(trial_counts)) > 1 else ""
+        if by_allocator:
+            top.set_title(f"{reference['allocator'].upper()} — {MODE_TITLES.get(mode, mode)}\n{summary}\nMedian of {reference['trials']} trials", fontsize=10)
+        elif presentation:
+            top.set_title(f"{MODE_TITLES.get(mode, mode)}\n{summary}", fontsize=11)
+        else:
+            top.set_title(f"{MODE_TITLES.get(mode, mode)}\n{summary}{trial_note}")
+        show_events = len(points) <= 40
         for ax in (top, middle, bottom):
-            for frame in points:
+            for frame in points if show_events else []:
                 ax.axvline(frame, color="0.6", linewidth=0.6, linestyle=":")
             ax.grid(True, alpha=0.3)
-            ax.legend(loc="upper right")
+            ax.legend(loc="upper right", fontsize=8 if presentation else None, framealpha=1)
         top.set_yscale("log")
-        bottom.set_xlabel("frame (dotted lines: points scored)")
+        unit = "turn" if mode.startswith("pokemon-") else "frame"
+        event = "wins/catches" if mode.startswith("pokemon-") else "points scored"
+        bottom.set_xlabel(f"{unit} (dotted lines: {event})" if show_events else unit)
 
-    axes[0][0].set_ylabel(f"step time (µs)\n{SMOOTH_FRAMES}-frame rolling median")
-    axes[1][0].set_ylabel("live particles")
-    axes[2][0].set_ylabel("reserved (KB)")
+    step_unit = "turn" if modes and all(mode.startswith("pokemon-") for mode in modes) else "frame"
+    axes[0][0].set_ylabel(f"step time (µs)\n{SMOOTH_FRAMES}-{step_unit} rolling median")
+    if modes and all(mode.startswith("pokemon-") for mode in modes):
+        axes[1][0].set_ylabel(f"live particles\n{SMOOTH_FRAMES}-{step_unit} rolling median")
+        axes[2][0].set_ylabel(f"reserved (KB)\n{SMOOTH_FRAMES}-{step_unit} rolling median")
+    else:
+        axes[1][0].set_ylabel("live particles")
+        axes[2][0].set_ylabel("reserved (KB)")
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=150)
     plt.close(fig)
@@ -199,10 +289,10 @@ def print_trace_table(series) -> None:
         )
 
 
-def series(rows):
+def series(rows, count_field="count"):
     grouped = defaultdict(list)
     for row in rows:
-        grouped[(row["allocator"], int(row["count"]))].append(row)
+        grouped[(row["allocator"], int(row[count_field]))].append(row)
     counts = sorted({count for _, count in grouped})
     present = [name for name in ALLOCATORS if any(name == alloc for alloc, _ in grouped)]
     present.extend(sorted({alloc for alloc, _ in grouped if alloc not in present}))
@@ -232,17 +322,18 @@ def iqr_bounds(values, mid):
     return max(0.0, mid - q1), max(0.0, q3 - mid)
 
 
-def plot(counts, allocators, grouped, out: Path) -> None:
+def plot(
+    counts,
+    allocators,
+    grouped,
+    out: Path,
+    time_field="total_ns",
+    time_label="median total runtime (ms)",
+    xlabel="object count",
+    log_y=False,
+) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(9.2, 4.2), layout="constrained")
-    draw(
-        axes[0],
-        counts,
-        allocators,
-        grouped,
-        "total_ns",
-        1e6,
-        "median total runtime (ms)",
-    )
+    draw(axes[0], counts, allocators, grouped, time_field, 1e6, time_label, log_y=log_y)
     draw(
         axes[1],
         counts,
@@ -251,15 +342,16 @@ def plot(counts, allocators, grouped, out: Path) -> None:
         "peak_rss_bytes",
         1e6,
         "median peak RSS (MB)",
+        log_y=log_y,
     )
     for ax in axes:
-        ax.set_xlabel("object count")
+        ax.set_xlabel(xlabel)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=150)
     plt.close(fig)
 
 
-def draw(ax, counts, allocators, grouped, field, scale, ylabel) -> None:
+def draw(ax, counts, allocators, grouped, field, scale, ylabel, log_y=False) -> None:
     for index, allocator in enumerate(allocators):
         xs, ys, lows, highs = points(grouped, allocator, counts, field, scale)
         if not xs:
@@ -271,11 +363,14 @@ def draw(ax, counts, allocators, grouped, field, scale, ylabel) -> None:
             label=allocator,
             color=COLORS.get(allocator, f"C{index}"),
             marker=MARKERS.get(allocator, "o"),
+            linestyle=LINESTYLES.get(allocator, "solid"),
             linewidth=1.6,
             capsize=3,
             markersize=6,
         )
     ax.set_xscale("log")
+    if log_y:
+        ax.set_yscale("log")
     ax.set_xticks(counts)
     ax.set_xticklabels([format_count(count) for count in counts])
     ax.xaxis.set_minor_locator(plt.NullLocator())
@@ -292,14 +387,14 @@ def format_count(count: int) -> str:
     return str(count)
 
 
-def print_table(counts, allocators, grouped) -> None:
-    print(f"{'allocator':<9} {'count':>9} {'total ms':>10} {'peak RSS MB':>12} {'trials':>7}")
+def print_table(counts, allocators, grouped, time_field="total_ns", time_header="total ms") -> None:
+    print(f"{'allocator':<9} {'count':>9} {time_header:>10} {'peak RSS MB':>12} {'trials':>7}")
     for count in counts:
         for allocator in allocators:
             group = grouped.get((allocator, count))
             if not group:
                 continue
-            total_ms = statistics.median(int(row["total_ns"]) for row in group) / 1e6
+            total_ms = statistics.median(int(row[time_field]) for row in group) / 1e6
             peak_mb = statistics.median(int(row["peak_rss_bytes"]) for row in group) / 1e6
             print(
                 f"{allocator:<9} {count:>9} {total_ms:>10.2f} {peak_mb:>12.2f} {len(group):>7}"
