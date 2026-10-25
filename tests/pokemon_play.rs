@@ -51,7 +51,6 @@ fn terminal_commands_map_validation_and_eof_work() {
 
 #[test]
 fn actual_terminal_can_explore_encounter_battle_catch_and_flee() {
-    // Build a player command transcript from the public API, then feed it to the executable.
     use game_engine::{
         alloc::pool::PoolAllocator,
         pokemon::{Action, Config, Pokemon},
@@ -59,10 +58,22 @@ fn actual_terminal_can_explore_encounter_battle_catch_and_flee() {
     let mut game = Pokemon::<PoolAllocator>::new(Config::default());
     let mut commands = String::new();
     let mut fled = false;
-    for _ in 0..400 {
-        let action = if game.state().wild.is_some() && !fled {
-            fled = true;
-            Action::Run
+    let mut won = false;
+    for _ in 0..4_000 {
+        if fled && won && game.state().catches > 0 && game.state().wild.is_none() {
+            break;
+        }
+        let action = if let Some(wild) = game.state().wild {
+            if !fled {
+                fled = true;
+                Action::Run
+            } else if !won {
+                Action::Attack
+            } else if wild.hp * 2 > wild.max_hp() {
+                Action::Attack
+            } else {
+                Action::Catch
+            }
         } else {
             game.auto_action()
         };
@@ -70,12 +81,15 @@ fn actual_terminal_can_explore_encounter_battle_catch_and_flee() {
             Action::Right => "right\n",
             Action::Left => "left\n",
             Action::Up => "up\n",
+            Action::Down => "down\n",
             Action::Attack => "attack\n",
             Action::Catch => "catch\n",
             Action::Run => "run\n",
-            _ => panic!("unexpected auto action"),
+            other => panic!("unexpected auto action {other:?}"),
         });
+        let wins = game.state().wins;
         game.step(action);
+        won |= game.state().wins > wins;
     }
     commands.push_str("party\nquit\n");
     let heap = play("heap", &commands);
