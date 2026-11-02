@@ -51,7 +51,7 @@ pub(crate) fn splitmix64(x: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-fn unit(bits: u32) -> f32 {
+pub(crate) fn unit(bits: u32) -> f32 {
     (bits >> 8) as f32 / (1u32 << 24) as f32
 }
 

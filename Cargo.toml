@@ -20,6 +20,7 @@ opt-level = 2
 clap = { version = "4", features = ["derive"] }
 libc = "0.2"
 minifb = { version = "0.29.0", default-features = false, features = ["x11"], optional = true }
+png = "0.18.1"
 
 [features]
 default = ["window"]
@@ -27,4 +28,12 @@ window = ["dep:minifb"]
 
 [[bin]]
 name = "play"
+required-features = ["window"]
+
+[[bin]]
+name = "pokemon-window"
+required-features = ["window"]
+
+[[bin]]
+name = "fight-window"
 required-features = ["window"]

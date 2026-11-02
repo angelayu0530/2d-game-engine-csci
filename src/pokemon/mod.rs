@@ -114,6 +114,18 @@ pub struct State {
     pub losses: u64,
     pub catches: u64,
 }
+impl State {
+    /// True once the active monster and reserves cover Fire, Grass, and Water.
+    pub fn has_every_element(&self) -> bool {
+        [Element::Fire, Element::Grass, Element::Water]
+            .iter()
+            .all(|element| {
+                std::iter::once(&self.starter)
+                    .chain(self.collection.iter())
+                    .any(|m| m.element == *element)
+            })
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Outcome {
@@ -185,6 +197,12 @@ impl<A: Allocator> Pokemon<A> {
     }
     pub fn state(&self) -> &State {
         &self.state
+    }
+    pub fn particles(&self) -> impl Iterator<Item = &Particle> {
+        self.handles.iter().map(|&handle| self.alloc.get(handle))
+    }
+    pub fn live_particles(&self) -> usize {
+        self.handles.len()
     }
     fn random(&mut self) -> u64 {
         self.rng = splitmix64(self.rng);
@@ -569,6 +587,10 @@ fn drive<A: Allocator>(
 mod replay;
 pub use replay::{Replay, replay};
 
+mod messages;
+pub use messages::describe;
+
+pub mod render;
 mod save;
 pub mod terminal;
 
