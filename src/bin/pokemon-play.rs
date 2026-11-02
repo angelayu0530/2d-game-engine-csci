@@ -49,16 +49,15 @@ fn play<A: Allocator>(cli: &Cli) -> io::Result<()> {
     let mut game = if cli.no_save || cli.new {
         fresh()
     } else {
-        match Pokemon::<A>::load(&cli.save) {
-            Ok(game) => {
+        match Pokemon::<A>::resume(&cli.save)? {
+            Some(game) => {
                 eprintln!("Loaded progress from {}.", cli.save.display());
                 if cli.seed.is_some() {
                     eprintln!("Existing save takes precedence over --seed.");
                 }
                 game
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => fresh(),
-            Err(error) => return Err(error),
+            None => fresh(),
         }
     };
     if !cli.no_save && cli.record.as_ref() == Some(&cli.save) {

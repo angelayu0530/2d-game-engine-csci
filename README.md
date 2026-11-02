@@ -26,7 +26,8 @@ src/alloc/pool.rs       fixed-size pool: preallocated slots + free list
 src/alloc/arena.rs      linear arena: bump cursor through blocks, reclaim all at once
 src/workload.rs         the fixed test loop and per-phase timing
 src/memory.rs           peak RSS measurement
-src/canvas.rs           software framebuffer: rects and score digits
+src/canvas.rs           software framebuffer: rects, pixels, and 3x5 text
+src/sprite.rs           PNG sprite sheet: tiles drawn rotated, mirrored, scaled, or tinted
 src/window/mod.rs       WindowConfig, Game trait, run loop, fixed-step clock (minifb, `window` feature)
 src/window/input.rs     backend-neutral Key/MouseButton and per-update Controls snapshot
 src/pong/mod.rs         deterministic Pong sim and CPU-vs-CPU match runner
@@ -36,8 +37,18 @@ src/pong/replay.rs      match recording format and replay runner
 src/pong/trace.rs       per-frame timing/memory sample (Frame) and its CSV row
 src/bin/play.rs         playable Pong in a window; records the match with --record
 src/bin/pong.rs         headless Pong benchmark: CPU vs. CPU or a recorded match
+src/fight/mod.rs        one-room boss fight: archer knight, boss AI, arrows and bolts, effect bursts
+src/fight/effects.rs    effect particles in per-epoch generations, each with its own allocator
+src/fight/render.rs     draws a fight with the Tiny Dungeon sprites
+src/fight/replay.rs     fight recording format (run-length encoded inputs)
+src/fight/trace.rs      per-step timing/memory sample and its CSV row
+src/bin/fight-window.rs playable boss fight in a window; records it with --record
+src/bin/fight.rs        headless boss fight benchmark: replays a recording at any particle load
+assets/tiny-dungeon/    Kenney's Tiny Dungeon sprite sheet (CC0) and its license
+assets/bow.png          16x16 bow (straight + 45°) in the Tiny Dungeon palette, made for this project
 results/                CSV output and plots (gitignored except this folder)
 scripts/bench.py        runs every allocator N times per count, writes CSV, prints a summary
+scripts/bench_fight.py  replays one recorded fight on every allocator at 1k..10M particles
 scripts/plot.py         plots bench.csv or a game summary vs. object count, or --trace CSVs vs. frame
 ```
 
@@ -107,7 +118,7 @@ is fully described by its config and per-frame input. `--record` writes both
 on exit; `pong --replay` re-runs that exact match headlessly through any
 allocator, reaching the same score and checksum. Without `--replay`, `pong`
 plays the computer against itself. `--no-default-features` builds without
-the window and the `play` binary.
+the window and the `play` and `pokemon-window` binaries.
 
 The computer (`pong::Cpu`) is separate from the sim: it reads only paddle
 height and ball state and returns an axis, like a keyboard. When the ball
@@ -117,6 +128,91 @@ at 75% of player paddle speed. `--cpu-variance` (both `play` and `pong`,
 default 0.5) scales that error as a fraction of paddle reach; `0` makes it
 exact. The error is seeded from `--seed`, so matches stay reproducible;
 recordings already contain the computer's inputs, so `--replay` rejects it.
+
+### Boss fight
+
+```sh
+# 1. Play (and record) a fight. Esc quits and writes the recording.
+cargo run --release --bin fight-window -- --record results/fight.fightrec
+
+# Watch it again, here with 1M particles (default: the count it was recorded at)
+cargo run --release --bin fight-window -- --replay results/fight.fightrec --particles 1000000
+
+# 2. Replay it on heap, pool, and arena at ~1k, 10k, 100k, 1M, and 10M live particles.
+#    Writes results/fight.csv and results/fight.png (sim time and peak RSS vs load).
+python3 scripts/bench_fight.py --replay results/fight.fightrec
+
+# Faster: first 10 s of the fight, plus one per-step chart per load (results/fight-<load>.png)
+python3 scripts/bench_fight.py --replay results/fight.fightrec --frames 600 --trace
+
+# One process by hand
+cargo run --release --bin fight -- --allocator arena --replay results/fight.fightrec --particles 1000000
+
+# Watch the bench: every measured run opens a window showing the fight as it is timed
+python3 scripts/bench_fight.py --replay results/fight.fightrec --watch
+cargo run --release --bin fight -- --allocator pool --replay results/fight.fightrec --particles 1000000 --watch
+```
+
+With `--watch` each measured run draws its fight in a window (redrawn at most
+every 16 ms, so heavy loads replay as fast as they simulate). Each step is
+timed on its own and `sim_ns` is the sum of those step times, so drawing is
+not counted; peak RSS does include the window. Closing a window stops the
+drawing and the run finishes headless. `--watch` needs the default `window`
+feature; without it `bench_fight.py` builds headless as before.
+
+`fight-window` opens a 960x640 window (480x320 at 2x). A knight
+(Tiny Dungeon sprites by [Kenney](https://kenney.nl), CC0) with a bow fights a
+demon with 40 hearts in one room. WASD or arrows move in 8 directions, Space
+shoots an arrow the way the knight faces (hold to keep firing, 2.5 per second;
+each arrow that reaches the boss costs it a heart), H drinks one of four potions (+2 hearts), F
+throws a stream of particles where the knight faces, R restarts after a win
+or death, Esc quits. `--particles N` (default 10000) sets the live particle
+target; `--allocator` picks the effect storage.
+
+`--replay FILE` turns the window into a viewer: it feeds the recorded inputs
+into a fresh fight one step per update, at the recording's particle count or
+any `--particles` given, and freezes on the last step. Because particles never
+affect gameplay, the fight plays out the same at any count; on Esc after the
+last step it reports whether the gameplay checksum matched the recording.
+Each step is still replayed even when the machine cannot keep up, so heavy
+loads (1M+) play back in slow motion instead of skipping.
+
+The boss walks toward the knight and gets meaner as it loses hearts: above
+two thirds it fires rings and aimed fans of bolts; below that it also flashes
+red and charges; in the last third it adds a spinning two-arm spiral. Touching
+the boss or a bolt costs a heart, then a second of invulnerability.
+
+Particles are effects only. Every step the room is topped back up to the
+target with embers (a quarter as an aura around the boss), and gameplay events
+add bursts on top, sized as a share of the target with a floor so small
+targets still show them: a shot throws N/200, each arrow and bolt trails N/5000
+per step, a hit N/50, a heal N/50, the boss's death N/2, and holding F throws N/40
+per step. Live particles therefore never drop below N, and play pushes them
+higher; half a second of spraying peaks around 1.5N. `peak_live` reports the
+actual high-water mark.
+
+Gameplay never reads particles, so one recording replays identically at every
+load. The recording stores the gameplay checksum it ended on, and `fight`
+refuses a full replay that does not reproduce it. Recordings from the earlier
+sword version (`fight-replay v1`) are rejected outright; record again. `bench_fight.py`
+additionally rejects results unless every allocator did identical particle
+work at each load and gameplay matched across loads. Each measured trial is
+its own process (peak RSS is per process), allocator order is shuffled
+reproducibly, and the CSV is rewritten after every load so a long 10M run
+keeps what finished.
+
+Arena storage is only freed when nothing in it is alive, and a room full of
+embers is never empty. So effects are split into generations: particles
+spawned in the same 16-step epoch share one allocator instance, lifetimes are
+capped at 120 steps, and a generation is reclaimed as soon as its last
+particle dies, then reused for a later epoch. At most nine generations
+exist. All three backends use the same generations.
+
+`sim_ns` is the step loop; `setup_ns` builds the fight and its initial N
+embers; `teardown_ns` retires everything still alive. Checksums are computed
+outside all three. At 10M particles expect roughly 1–1.5 GB peak RSS per
+process and tens of milliseconds per step, so a one-minute recording takes
+minutes per trial; `--frames` replays a prefix.
 
 ### Writing another game
 

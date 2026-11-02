@@ -113,6 +113,14 @@ impl<A: Allocator> Pokemon<A> {
     pub fn load(path: &Path) -> io::Result<Self> {
         Self::from_snapshot(&fs::read_to_string(path)?)
     }
+    /// Loads `path`, or `None` when it does not exist yet.
+    pub fn resume(path: &Path) -> io::Result<Option<Self>> {
+        match Self::load(path) {
+            Ok(game) => Ok(Some(game)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
 
     pub fn from_snapshot(text: &str) -> io::Result<Self> {
         let mut words = Words(text.split_whitespace());

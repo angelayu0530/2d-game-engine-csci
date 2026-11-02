@@ -1,6 +1,6 @@
 use std::io::{self, BufRead, Write};
 
-use super::{Action, Config, MAP, Pokemon, State};
+use super::{Action, Config, MAP, Pokemon, State, describe};
 use crate::alloc::Allocator;
 
 const HELP: &str = "Commands (press Enter after each):
@@ -89,130 +89,10 @@ fn status(out: &mut impl Write, state: &State) -> io::Result<()> {
 }
 
 fn feedback(out: &mut impl Write, before: &State, after: &State, action: Action) -> io::Result<()> {
-    if before.position != after.position && after.losses == before.losses {
-        writeln!(
-            out,
-            "Moved to {}, {}.",
-            after.position[0], after.position[1]
-        )?;
-    }
-    if after.encounters > before.encounters {
-        writeln!(out, "A wild monster appeared!")?;
-        if let Some(wild) = after.wild {
-            writeln!(out, "{}", wild.description())?;
-        }
-    }
-    if after.wins > before.wins {
-        writeln!(out, "Wild monster defeated! Gained 10 XP and a ball.")?;
-    }
-    if after.catches > before.catches {
-        writeln!(out, "Caught it! Gained 10 XP and a reward ball.")?;
-        if before.collection.len() == 5 {
-            writeln!(out, "Party full: this catch was released.")?;
-        }
-    }
-    if after.losses > before.losses {
-        writeln!(
-            out,
-            "Your party fainted. Returned to H; party healed and balls restocked."
-        )?;
-    }
-    if before.starter.element == after.starter.element && after.starter.level > before.starter.level
-    {
-        writeln!(out, "Level up! HP restored.")?;
-    }
-    match action {
-        Action::Attack if before.wild.is_some() => {
-            let wild = before.wild.unwrap();
-            let hp = after.wild.map_or(0, |m| m.hp);
-            if after.losses == before.losses {
-                writeln!(
-                    out,
-                    "Your attack dealt {} damage.",
-                    wild.hp.saturating_sub(hp)
-                )?;
-            }
-        }
-        Action::Catch if before.wild.is_some() && before.balls == 0 => {
-            writeln!(out, "No balls left. Run and return to H to restock.")?;
-        }
-        Action::Catch if before.wild.is_some() && before.catches == after.catches => {
-            writeln!(out, "It broke free! Try weakening it first.")?;
-        }
-        Action::Run if before.wild.is_some() => {
-            writeln!(out, "Escaped safely.")?;
-        }
-        Action::Heal if before.wild.is_some() => {
-            writeln!(out, "You cannot heal during battle.")?;
-        }
-        Action::Heal if before.position == [1, 1] => {
-            writeln!(out, "Party healed and balls restocked.")?;
-        }
-        Action::Heal => {
-            writeln!(out, "Return to H to heal.")?;
-        }
-        Action::Release(_) => {
-            if before.wild.is_some() {
-                writeln!(out, "You cannot release a monster during battle.")?;
-            } else if after.collection.len() < before.collection.len() {
-                writeln!(out, "Reserve released. You have room for another catch.")?;
-            } else {
-                writeln!(out, "That reserve slot is empty.")?;
-            }
-        }
-        Action::Switch(index) => {
-            if before.collection.get(index).is_some_and(|m| m.hp > 0) {
-                writeln!(out, "Sent out reserve {}.", index + 1)?;
-            } else {
-                writeln!(out, "That reserve slot is empty or fainted.")?;
-            }
-        }
-        Action::Up | Action::Down | Action::Left | Action::Right => {
-            if before.wild.is_some() {
-                writeln!(
-                    out,
-                    "You are in battle. Use attack, catch, switch N, or run."
-                )?;
-            } else if before.position == after.position {
-                writeln!(out, "A wall blocks the way.")?;
-            }
-        }
-        Action::Attack | Action::Catch | Action::Run if before.wild.is_none() => {
-            writeln!(
-                out,
-                "There is no wild monster here. Explore the tall grass."
-            )?;
-        }
-        _ => {}
-    }
-    if before.wild.is_some() && after.losses == before.losses {
-        if after.collection.iter().filter(|m| m.hp == 0).count()
-            > before.collection.iter().filter(|m| m.hp == 0).count()
-        {
-            writeln!(
-                out,
-                "Your active monster fainted; a healthy reserve stepped in."
-            )?;
-        } else if !matches!(action, Action::Switch(_)) && after.starter.hp < before.starter.hp {
-            writeln!(
-                out,
-                "The wild monster hit back for {} damage.",
-                before.starter.hp - after.starter.hp
-            )?;
-        }
+    for line in describe(before, after, action) {
+        writeln!(out, "{line}")?;
     }
     Ok(())
-}
-
-fn goal(state: &State) -> bool {
-    use super::Element;
-    [Element::Fire, Element::Grass, Element::Water]
-        .iter()
-        .all(|element| {
-            std::iter::once(&state.starter)
-                .chain(state.collection.iter())
-                .any(|m| m.element == *element)
-        })
 }
 
 pub fn play<A: Allocator>(
@@ -248,7 +128,7 @@ pub fn recorded_session<A: Allocator>(
     )?;
     map(out, game.state())?;
     writeln!(out, "{}", game.state().starter.description())?;
-    let mut celebrated = goal(game.state());
+    let mut celebrated = game.state().has_every_element();
     loop {
         status(out, game.state())?;
         write!(out, "> ")?;
@@ -313,7 +193,7 @@ pub fn recorded_session<A: Allocator>(
                     if game.state().wild.is_none() {
                         map(out, game.state())?;
                     }
-                    if !celebrated && goal(game.state()) {
+                    if !celebrated && game.state().has_every_element() {
                         writeln!(
                             out,
                             "Goal complete! Your party contains all three elements. Keep exploring!"

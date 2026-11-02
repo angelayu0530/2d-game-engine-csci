@@ -1,9 +1,11 @@
 pub mod alloc;
 pub mod canvas;
+pub mod fight;
 pub mod memory;
 pub mod particle;
 pub mod pokemon;
 pub mod pong;
+pub mod sprite;
 #[cfg(feature = "window")]
 pub mod window;
 pub mod workload;
