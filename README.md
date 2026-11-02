@@ -138,6 +138,9 @@ cargo run --release --bin fight-window -- --record results/fight.fightrec
 # Watch it again, here with 1M particles (default: the count it was recorded at)
 cargo run --release --bin fight-window -- --replay results/fight.fightrec --particles 1000000
 
+# Render a replay straight to an MP4 (60 fps, 960x640) instead of opening a window
+cargo run --release --bin fight-window -- --replay results/fight.fightrec --particles 10000000 --video results/videos/fight-10m.mp4
+
 # 2. Replay it on heap, pool, and arena at ~1k, 10k, 100k, 1M, and 10M live particles.
 #    Writes results/fight.csv and results/fight.png (sim time and peak RSS vs load).
 python3 scripts/bench_fight.py --replay results/fight.fightrec
@@ -176,6 +179,12 @@ affect gameplay, the fight plays out the same at any count; on Esc after the
 last step it reports whether the gameplay checksum matched the recording.
 Each step is still replayed even when the machine cannot keep up, so heavy
 loads (1M+) play back in slow motion instead of skipping.
+
+`--video FILE` renders the replay offline instead of opening a window: every
+step is drawn exactly as the window draws it and piped to `ffmpeg`, encoded
+with macOS VideoToolbox (`h264_videotoolbox`). Frames are produced as fast as
+the simulation allows and written at a fixed 60 fps, so even a 10M-particle
+replay comes out at full speed. Needs `ffmpeg` on `PATH` (`brew install ffmpeg`).
 
 The boss walks toward the knight and gets meaner as it loses hearts: above
 two thirds it fires rings and aimed fans of bolts; below that it also flashes
