@@ -1,3 +1,13 @@
+//! Deterministic turn-based exploration and battles shared by all frontends.
+//! Gameplay rules never depend on effects or allocator choice. Save/replay
+//! checksums include effects; `game_checksum` compares gameplay across loads.
+
+pub mod autoplay;
+mod effects;
+mod gameplay;
+#[cfg(test)]
+use gameplay::damage;
+
 use std::time::{Duration, Instant};
 
 use crate::{
@@ -39,46 +49,155 @@ pub enum Element {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Species {
+    Charmander = 0,
+    Vulpix = 1,
+    Growlithe = 2,
+    Bulbasaur = 3,
+    Oddish = 4,
+    Bellsprout = 5,
+    Squirtle = 6,
+    Psyduck = 7,
+    Poliwag = 8,
+}
+impl Species {
+    pub const ALL: [Species; 9] = [
+        Self::Charmander,
+        Self::Vulpix,
+        Self::Growlithe,
+        Self::Bulbasaur,
+        Self::Oddish,
+        Self::Bellsprout,
+        Self::Squirtle,
+        Self::Psyduck,
+        Self::Poliwag,
+    ];
+
+    pub fn from_u8(value: u8) -> Option<Self> {
+        Self::ALL.get(usize::from(value)).copied()
+    }
+    pub fn element(self) -> Element {
+        match self {
+            Self::Charmander | Self::Vulpix | Self::Growlithe => Element::Fire,
+            Self::Bulbasaur | Self::Oddish | Self::Bellsprout => Element::Grass,
+            Self::Squirtle | Self::Psyduck | Self::Poliwag => Element::Water,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Charmander => "Charmander",
+            Self::Vulpix => "Vulpix",
+            Self::Growlithe => "Growlithe",
+            Self::Bulbasaur => "Bulbasaur",
+            Self::Oddish => "Oddish",
+            Self::Bellsprout => "Bellsprout",
+            Self::Squirtle => "Squirtle",
+            Self::Psyduck => "Psyduck",
+            Self::Poliwag => "Poliwag",
+        }
+    }
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Charmander => {
+                "Charmander is a small orange lizard with a flame on its tail. Its Fire attacks are strong against Grass and weak against Water."
+            }
+            Self::Vulpix => {
+                "Small fox with six tails and a flame at each tip. Fire is strong against Grass and weak against Water."
+            }
+            Self::Growlithe => {
+                "Striped orange puppy. Fire is strong against Grass and weak against Water."
+            }
+            Self::Bulbasaur => {
+                "Bulbasaur is a green, four-legged creature carrying a plant bulb on its back. Its Grass attacks are strong against Water and weak against Fire."
+            }
+            Self::Oddish => {
+                "Round blue weed with leaves on its head. Grass is strong against Water and weak against Fire."
+            }
+            Self::Bellsprout => {
+                "Thin yellow plant with a bell head. Grass is strong against Water and weak against Fire."
+            }
+            Self::Squirtle => {
+                "Squirtle is a small blue turtle protected by a sturdy shell. Its Water attacks are strong against Fire and weak against Grass."
+            }
+            Self::Psyduck => {
+                "Yellow duck with a blank stare. Water is strong against Fire and weak against Grass."
+            }
+            Self::Poliwag => {
+                "Round blue tadpole with a pale belly. Water is strong against Fire and weak against Grass."
+            }
+        }
+    }
+    pub fn base_hp(self) -> u32 {
+        match self {
+            Self::Charmander | Self::Bulbasaur | Self::Squirtle => 24,
+            Self::Vulpix | Self::Bellsprout | Self::Poliwag => 22,
+            Self::Growlithe => 28,
+            Self::Oddish => 20,
+            Self::Psyduck => 26,
+        }
+    }
+    pub fn power(self) -> u32 {
+        match self {
+            Self::Charmander
+            | Self::Bulbasaur
+            | Self::Squirtle
+            | Self::Bellsprout
+            | Self::Psyduck => 4,
+            Self::Vulpix | Self::Growlithe => 5,
+            Self::Oddish | Self::Poliwag => 3,
+        }
+    }
+    pub fn catch_base(self) -> u32 {
+        match self {
+            Self::Charmander | Self::Bulbasaur | Self::Squirtle => 25,
+            Self::Vulpix => 20,
+            Self::Growlithe => 12,
+            Self::Oddish => 45,
+            Self::Bellsprout => 35,
+            Self::Psyduck => 18,
+            Self::Poliwag => 40,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Monster {
-    pub element: Element,
+    pub species: Species,
     pub level: u32,
     pub hp: u32,
     pub xp: u32,
 }
 impl Monster {
+    pub fn element(&self) -> Element {
+        self.species.element()
+    }
     pub fn name(&self) -> &'static str {
-        match self.element {
-            Element::Fire => "Charmander",
-            Element::Grass => "Bulbasaur",
-            Element::Water => "Squirtle",
-        }
+        self.species.name()
     }
     pub fn description(&self) -> &'static str {
-        match self.element {
-            Element::Fire => {
-                "Charmander is a small orange lizard with a flame on its tail. Its Fire attacks are strong against Grass and weak against Water."
-            }
-            Element::Grass => {
-                "Bulbasaur is a green, four-legged creature carrying a plant bulb on its back. Its Grass attacks are strong against Water and weak against Fire."
-            }
-            Element::Water => {
-                "Squirtle is a small blue turtle protected by a sturdy shell. Its Water attacks are strong against Fire and weak against Grass."
-            }
-        }
+        self.species.description()
     }
-
     pub fn max_hp(&self) -> u32 {
-        24 + self.level * 6
+        self.species.base_hp() + self.level * 6
     }
-    fn new(element: Element, level: u32) -> Self {
+    pub fn of(species: Species, level: u32) -> Self {
         let mut monster = Self {
-            element,
+            species,
             level,
             hp: 0,
             xp: 0,
         };
         monster.hp = monster.max_hp();
         monster
+    }
+    pub(super) fn new(element: Element, level: u32) -> Self {
+        let species = match element {
+            Element::Fire => Species::Charmander,
+            Element::Grass => Species::Bulbasaur,
+            Element::Water => Species::Squirtle,
+        };
+        Self::of(species, level)
     }
 }
 
@@ -107,6 +226,7 @@ pub struct State {
     pub position: [usize; 2],
     pub starter: Monster,
     pub wild: Option<Monster>,
+    pub pending: Option<Monster>,
     pub collection: Vec<Monster>,
     pub balls: u32,
     pub encounters: u64,
@@ -122,7 +242,7 @@ impl State {
             .all(|element| {
                 std::iter::once(&self.starter)
                     .chain(self.collection.iter())
-                    .any(|m| m.element == *element)
+                    .any(|m| m.element() == *element)
             })
     }
 }
@@ -131,6 +251,7 @@ impl State {
 pub struct Outcome {
     pub state: State,
     pub checksum: u64,
+    pub game_checksum: u64,
     pub created: u64,
     pub retired: u64,
     pub particle_updates: u64,
@@ -183,6 +304,7 @@ impl<A: Allocator> Pokemon<A> {
                 position: [1, 1],
                 starter: Monster::new(Element::Fire, 1),
                 wild: None,
+                pending: None,
                 collection: Vec::new(),
                 balls: 10,
                 encounters: 0,
@@ -211,103 +333,7 @@ impl<A: Allocator> Pokemon<A> {
 
     pub fn step(&mut self, action: Action) {
         let was_in_battle = self.state.wild.is_some();
-        let mut burst = false;
-        if let Some(mut wild) = self.state.wild {
-            let mut retaliate = false;
-            match action {
-                Action::Attack => {
-                    let damage = damage(self.state.starter, wild);
-                    wild.hp = wild.hp.saturating_sub(damage);
-                    burst = true;
-                    if wild.hp == 0 {
-                        self.state.wins += 1;
-                        self.reward();
-                        self.state.wild = None;
-                    } else {
-                        self.state.wild = Some(wild);
-                        retaliate = true;
-                    }
-                }
-                Action::Catch if self.state.balls > 0 => {
-                    self.state.balls -= 1;
-                    burst = true;
-                    let chance = 25 + 65 * (wild.max_hp() - wild.hp) / wild.max_hp();
-                    if self.random() % 100 < u64::from(chance) {
-                        self.state.catches += 1;
-                        if self.state.collection.len() < 5 {
-                            self.state.collection.push(wild);
-                        }
-                        self.reward();
-                        self.state.wild = None;
-                    } else {
-                        retaliate = true;
-                    }
-                }
-                Action::Switch(index) if self.switch(index) => {
-                    retaliate = true;
-                }
-                Action::Run => {
-                    self.state.wild = None;
-                }
-                _ => {}
-            }
-            if retaliate {
-                self.state.starter.hp = self
-                    .state
-                    .starter
-                    .hp
-                    .saturating_sub(damage(wild, self.state.starter));
-                if self.state.starter.hp == 0 {
-                    if let Some(index) = self.state.collection.iter().position(|m| m.hp > 0) {
-                        self.switch(index);
-                    } else {
-                        self.state.losses += 1;
-                        self.state.position = [1, 1];
-                        self.state.wild = None;
-                        self.heal();
-                    }
-                }
-            }
-        } else {
-            match action {
-                Action::Switch(index) => {
-                    self.switch(index);
-                }
-                Action::Release(index) if index < self.state.collection.len() => {
-                    self.state.collection.remove(index);
-                }
-                _ => {}
-            }
-            let [x, y] = self.state.position;
-            let next = match action {
-                Action::Up => [x, y.saturating_sub(1)],
-                Action::Down => [x, y + 1],
-                Action::Left => [x.saturating_sub(1), y],
-                Action::Right => [x + 1, y],
-                _ => [x, y],
-            };
-            if action == Action::Heal && MAP[y].as_bytes()[x] == b'H' {
-                self.heal();
-            }
-            if next != [x, y]
-                && next[1] < MAP.len()
-                && next[0] < MAP[0].len()
-                && MAP[next[1]].as_bytes()[next[0]] != b'#'
-            {
-                self.state.position = next;
-                burst = true;
-                if MAP[next[1]].as_bytes()[next[0]] == b'g' && self.random().is_multiple_of(3) {
-                    let element = match self.random() % 3 {
-                        0 => Element::Fire,
-                        1 => Element::Grass,
-                        _ => Element::Water,
-                    };
-                    let level = (self.random() % 4 + 1) as u32;
-                    self.state.wild = Some(Monster::new(element, level));
-                    self.state.encounters += 1;
-                }
-            }
-        }
+        let mut burst = self.apply_action(action);
         if was_in_battle && self.state.wild.is_none() {
             self.clear();
             burst = true;
@@ -324,73 +350,29 @@ impl<A: Allocator> Pokemon<A> {
         self.peak_live = self.peak_live.max(self.alloc.live_count());
         self.peak_reserved = self.peak_reserved.max(self.alloc.reserved_bytes());
     }
-    fn switch(&mut self, index: usize) -> bool {
-        match self.state.collection.get_mut(index) {
-            Some(monster) if monster.hp > 0 => {
-                std::mem::swap(&mut self.state.starter, monster);
-                true
-            }
-            _ => false,
-        }
-    }
-    fn heal(&mut self) {
-        self.state.starter.hp = self.state.starter.max_hp();
-        for monster in &mut self.state.collection {
-            monster.hp = monster.max_hp();
-        }
-        self.state.balls = 10;
-    }
-    fn reward(&mut self) {
-        let starter = &mut self.state.starter;
-        starter.xp = starter.xp.saturating_add(10);
-        if starter.xp >= starter.level * 20 && starter.level < 100 {
-            starter.xp -= starter.level * 20;
-            starter.level += 1;
-            starter.hp = starter.max_hp();
-        }
-        self.state.balls = (self.state.balls + 1).min(10);
-    }
-    fn effects(&mut self, count: usize) {
-        for _ in 0..count {
-            let particle = Particle::at(
-                self.created as usize,
-                self.state.position.map(|v| v as f32 * 32.0),
-                self.cfg.lifetime,
-            );
-            self.handles.push(self.alloc.create(particle));
-            self.created += 1;
-        }
-    }
-    fn age(&mut self) {
-        self.updates += self.handles.len() as u64;
-        for i in (0..self.handles.len()).rev() {
-            let particle = self.alloc.get_mut(self.handles[i]);
-            particle.update(self.cfg.dt);
-            if particle.lifetime == 0 {
-                self.alloc.retire(self.handles.swap_remove(i));
-                self.retired += 1;
-            }
-        }
+    /// Full replay checksum, including particle order and lifetime counters.
+    pub fn checksum(&self) -> u64 {
+        self.checksum_inner(true)
     }
 
-    fn clear(&mut self) {
-        for handle in self.handles.drain(..) {
-            self.alloc.retire(handle);
-            self.retired += 1;
-        }
-        self.alloc.reclaim();
+    /// Gameplay, turn, and RNG state only, comparable across particle loads.
+    pub fn game_checksum(&self) -> u64 {
+        self.checksum_inner(false)
     }
-    pub fn checksum(&self) -> u64 {
+
+    fn checksum_inner(&self, include_effects: bool) -> u64 {
         let mut hash = 0xcbf29ce484222325u64;
         let mut mix = |value: u64| {
             hash = (hash ^ value).wrapping_mul(0x100000001b3);
         };
+        mix(self.frame);
+        mix(self.rng);
+        if include_effects {
+            for value in [self.created, self.retired, self.updates] {
+                mix(value);
+            }
+        }
         for value in [
-            self.frame,
-            self.rng,
-            self.created,
-            self.retired,
-            self.updates,
             self.state.position[0] as u64,
             self.state.position[1] as u64,
             u64::from(self.state.balls),
@@ -399,22 +381,27 @@ impl<A: Allocator> Pokemon<A> {
             self.state.losses,
             self.state.catches,
             self.state.wild.is_some() as u64,
+            self.state.pending.is_some() as u64,
             self.state.collection.len() as u64,
         ] {
             mix(value);
         }
         for monster in std::iter::once(&self.state.starter)
             .chain(self.state.wild.iter())
+            .chain(self.state.pending.iter())
             .chain(self.state.collection.iter())
         {
             for v in [
-                monster.element as u32,
+                monster.species as u32,
                 monster.level,
                 monster.hp,
                 monster.xp,
             ] {
                 mix(u64::from(v));
             }
+        }
+        if !include_effects {
+            return hash;
         }
         for &handle in &self.handles {
             let p = self.alloc.get(handle);
@@ -434,6 +421,7 @@ impl<A: Allocator> Pokemon<A> {
         Outcome {
             state: self.state.clone(),
             checksum: self.checksum(),
+            game_checksum: self.game_checksum(),
             created: self.created,
             retired: self.retired,
             particle_updates: self.updates,
@@ -447,6 +435,9 @@ impl<A: Allocator> Pokemon<A> {
         }
     }
     pub fn auto_action(&self) -> Action {
+        if self.state.pending.is_some() {
+            return Action::Run;
+        }
         if let Some(wild) = self.state.wild {
             if wild.hp <= wild.max_hp() / 2
                 && self.state.balls > 0
@@ -499,18 +490,6 @@ impl<A: Allocator> Drop for Pokemon<A> {
         self.clear();
     }
 }
-fn damage(attacker: Monster, defender: Monster) -> u32 {
-    let base = 4 + attacker.level * 2;
-    match (attacker.element, defender.element) {
-        (Element::Fire, Element::Grass)
-        | (Element::Grass, Element::Water)
-        | (Element::Water, Element::Fire) => base * 2,
-        (Element::Grass, Element::Fire)
-        | (Element::Water, Element::Grass)
-        | (Element::Fire, Element::Water) => base / 2,
-        _ => base,
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Frame {
@@ -539,12 +518,72 @@ pub fn run<A: Allocator>(
     )
 }
 
+/// State observers run outside simulation timing (for GUI viewing or trace collection).
+pub type Observer<'a, A> = Option<&'a mut dyn FnMut(&Pokemon<A>, Frame)>;
+
+/// Run an automated or recorded session, optionally maintaining an exact live effect target.
+/// Callers validate a recording at its original load before using scaled results.
+pub fn benchmark_session<A: Allocator>(
+    cfg: Config,
+    frames: u32,
+    recording: Option<&Replay>,
+    particles: Option<usize>,
+    observe: Observer<'_, A>,
+) -> std::io::Result<Outcome> {
+    let setup = Instant::now();
+    let mut game = match recording {
+        Some(r) => Pokemon::<A>::from_snapshot(&r.initial)?,
+        None => Pokemon::<A>::new(cfg),
+    };
+    if particles.is_some() {
+        game.clear();
+        game.cfg.burst = 0;
+        game.cfg.trail = 0;
+    }
+    let setup = setup.elapsed();
+    let steps = recording.map_or(frames as usize, |r| r.actions.len());
+    let mut explorer = autoplay::Explorer::default();
+    Ok(drive_observed(
+        game,
+        steps,
+        |game, i| match recording {
+            Some(r) => r.actions[i],
+            None if particles.is_some() => explorer.action(game.state()),
+            None => game.auto_action(),
+        },
+        setup,
+        particles,
+        observe,
+    ))
+}
+
 fn drive<A: Allocator>(
+    game: Pokemon<A>,
+    steps: usize,
+    input: impl FnMut(&Pokemon<A>, usize) -> Action,
+    setup: Duration,
+    trace: Option<&mut dyn FnMut(Frame)>,
+) -> Outcome {
+    match trace {
+        Some(trace) => drive_observed(
+            game,
+            steps,
+            input,
+            setup,
+            None,
+            Some(&mut |_, frame| trace(frame)),
+        ),
+        None => drive_observed(game, steps, input, setup, None, None),
+    }
+}
+
+fn drive_observed<A: Allocator>(
     mut game: Pokemon<A>,
     steps: usize,
     mut input: impl FnMut(&Pokemon<A>, usize) -> Action,
     setup: Duration,
-    mut trace: Option<&mut dyn FnMut(Frame)>,
+    particles: Option<usize>,
+    mut observe: Observer<'_, A>,
 ) -> Outcome {
     let initial_live = game.handles.len();
     let initial_created = game.created;
@@ -553,25 +592,37 @@ fn drive<A: Allocator>(
     game.peak_live = initial_live;
     game.peak_reserved = game.alloc.reserved_bytes();
     let start = Instant::now();
+    let mut simulation = Duration::ZERO;
     for index in 0..steps {
+        let step = observe.as_ref().map(|_| Instant::now());
         let action = input(&game, index);
-        if let Some(observe) = trace.as_deref_mut() {
-            let step = Instant::now();
-            game.step(action);
-            let elapsed = step.elapsed();
-            observe(Frame {
-                index: index as u32,
-                step: elapsed,
-                live: game.handles.len(),
-                reserved_bytes: game.alloc.reserved_bytes(),
-                wins: game.state.wins,
-                catches: game.state.catches,
-            });
-        } else {
-            game.step(action);
+        game.step(action);
+        if let Some(target) = particles {
+            game.effects(target.saturating_sub(game.live_particles()));
+            game.peak_live = game.peak_live.max(game.live_particles());
+            game.peak_reserved = game.peak_reserved.max(game.alloc.reserved_bytes());
+        }
+        let elapsed = step.map_or(Duration::ZERO, |start| start.elapsed());
+        simulation += elapsed;
+        if let Some(observe) = observe.as_deref_mut() {
+            observe(
+                &game,
+                Frame {
+                    index: index as u32,
+                    step: elapsed,
+                    live: game.handles.len(),
+                    reserved_bytes: game.alloc.reserved_bytes(),
+                    wins: game.state.wins,
+                    catches: game.state.catches,
+                },
+            );
         }
     }
-    let elapsed = start.elapsed();
+    let elapsed = if observe.is_some() {
+        simulation
+    } else {
+        start.elapsed()
+    };
     let mut result = game.outcome(elapsed);
     result.setup = setup;
     result.initial_live = initial_live;
@@ -592,7 +643,6 @@ pub use messages::describe;
 
 pub mod render;
 mod save;
-pub mod terminal;
 
 #[cfg(test)]
 mod tests;

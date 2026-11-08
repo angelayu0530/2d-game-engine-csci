@@ -57,6 +57,29 @@ class SummaryTests(unittest.TestCase):
     def test_single_load_has_no_scale_axis(self):
         self.assertEqual(plot.scale_axis([summary_row('heap', 10, 1, 1)]), (None, None))
 
+    def test_pokemon_summary_normalizes_without_mutating_input(self):
+        rows = []
+        for allocator in ('heap', 'pool', 'arena'):
+            for count in (1000, 10000):
+                item = summary_row(allocator, count, 1000000, count * 100)
+                item.update(frames='100', reserved_bytes=str(count * 20), mode='pokemon-auto')
+                rows.append(item)
+        from unittest.mock import patch
+        with patch.object(plot, 'plot') as draw:
+            plot.write_game_summary(rows, Path('unused.png'))
+        kwargs = draw.call_args.kwargs
+        self.assertEqual(kwargs['time_field'], 'fps')
+        self.assertEqual(kwargs['mem_field'], 'rss_per_particle')
+        grouped = draw.call_args.args[2]
+        self.assertEqual(float(grouped[('heap', 1000)][0]['fps']), 100000)
+        self.assertEqual(float(grouped[('heap', 1000)][0]['rss_per_particle']), 100)
+        self.assertNotIn('fps', rows[0])
+
+    def test_zero_duration_is_rejected(self):
+        rows = [dict(summary_row('heap', n, 0, 100), frames='1') for n in (10, 100)]
+        with self.assertRaisesRegex(ValueError, 'positive'):
+            plot.write_game_summary(rows, Path('unused.png'))
+
     def test_summary_png_uses_simulation_time(self):
         rows = []
         for allocator, sim in (('heap', 500), ('pool', 100), ('arena', 200)):

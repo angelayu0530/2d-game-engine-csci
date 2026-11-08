@@ -20,15 +20,19 @@ impl Words<'_> {
             .parse()
             .map_err(|_| invalid())
     }
-    fn monster(&mut self) -> io::Result<Monster> {
-        let element = match self.number::<u8>()? {
-            0 => Element::Fire,
-            1 => Element::Grass,
-            2 => Element::Water,
-            _ => return Err(invalid()),
+    fn monster(&mut self, legacy: bool) -> io::Result<Monster> {
+        let species = if legacy {
+            match self.number::<u8>()? {
+                0 => Species::Charmander,
+                1 => Species::Bulbasaur,
+                2 => Species::Squirtle,
+                _ => return Err(invalid()),
+            }
+        } else {
+            Species::from_u8(self.number()?).ok_or_else(invalid)?
         };
         let m = Monster {
-            element,
+            species,
             level: self.number()?,
             hp: self.number()?,
             xp: self.number()?,
@@ -42,7 +46,7 @@ impl Words<'_> {
 impl<A: Allocator> Pokemon<A> {
     pub fn snapshot(&self) -> String {
         let mut text = format!(
-            "POKEMON_SAVE_2\n{} {} {} {} {}\n{} {} {} {} {} {} {}\n",
+            "POKEMON_SAVE_3\n{} {} {} {} {}\n{} {} {} {} {} {} {}\n",
             self.cfg.seed,
             self.cfg.burst,
             self.cfg.lifetime,
@@ -64,7 +68,7 @@ impl<A: Allocator> Pokemon<A> {
         fn monster(text: &mut String, m: Monster) {
             text.push_str(&format!(
                 "{} {} {} {}\n",
-                m.element as u8, m.level, m.hp, m.xp
+                m.species as u8, m.level, m.hp, m.xp
             ));
         }
         monster(&mut text, s.starter);
@@ -74,6 +78,10 @@ impl<A: Allocator> Pokemon<A> {
         }
         text.push_str(&format!("{}\n", s.collection.len()));
         for &m in &s.collection {
+            monster(&mut text, m);
+        }
+        text.push_str(&format!("{}\n", u8::from(s.pending.is_some())));
+        if let Some(m) = s.pending {
             monster(&mut text, m);
         }
         text.push_str(&format!("{}\n", self.handles.len()));
@@ -125,19 +133,18 @@ impl<A: Allocator> Pokemon<A> {
     pub fn from_snapshot(text: &str) -> io::Result<Self> {
         let mut words = Words(text.split_whitespace());
         let version = words.0.next();
-        if !matches!(version, Some("POKEMON_SAVE_1" | "POKEMON_SAVE_2")) {
-            return Err(invalid());
-        }
+        let (legacy, has_timing) = match version {
+            Some("POKEMON_SAVE_1") => (true, false),
+            Some("POKEMON_SAVE_2") => (true, true),
+            Some("POKEMON_SAVE_3") => (false, true),
+            _ => return Err(invalid()),
+        };
         let cfg = Config {
             seed: words.number()?,
             burst: words.number()?,
             lifetime: words.number()?,
-            trail: if version == Some("POKEMON_SAVE_2") {
-                words.number()?
-            } else {
-                0
-            },
-            dt: if version == Some("POKEMON_SAVE_2") {
+            trail: if has_timing { words.number()? } else { 0 },
+            dt: if has_timing {
                 words.number()?
             } else {
                 1.0 / 60.0
@@ -160,10 +167,10 @@ impl<A: Allocator> Pokemon<A> {
         let wins = words.number()?;
         let losses = words.number()?;
         let catches = words.number()?;
-        let starter = words.monster()?;
+        let starter = words.monster(legacy)?;
         let wild = match words.number::<u8>()? {
             0 => None,
-            1 => Some(words.monster()?),
+            1 => Some(words.monster(legacy)?),
             _ => return Err(invalid()),
         };
         let count = words.number::<usize>()?;
@@ -179,7 +186,19 @@ impl<A: Allocator> Pokemon<A> {
         }
         let mut collection = Vec::new();
         for _ in 0..count {
-            collection.push(words.monster()?);
+            collection.push(words.monster(legacy)?);
+        }
+        let pending = if legacy {
+            None
+        } else {
+            match words.number::<u8>()? {
+                0 => None,
+                1 => Some(words.monster(false)?),
+                _ => return Err(invalid()),
+            }
+        };
+        if (wild.is_some() && pending.is_some()) || pending.is_some_and(|m| m.hp == 0) {
+            return Err(invalid());
         }
         game.state = State {
             position,
@@ -190,6 +209,7 @@ impl<A: Allocator> Pokemon<A> {
             catches,
             starter,
             wild,
+            pending,
             collection,
         };
         let count = words.number::<usize>()?;

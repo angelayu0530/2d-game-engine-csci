@@ -4,7 +4,11 @@ results/*.csv
 results/*.png
 results/videos/
 .DS_Store
+__pycache__/
+*.py[cod]
 
 # Local terminal adventure saves
 *.save
 *.save.*.tmp
+results/pokemon-suite
+results/pokemon-benchmark-demo.pokemonrec

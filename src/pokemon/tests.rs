@@ -64,16 +64,54 @@ fn defeat_returns_to_healing_center_and_run_ends_battle() {
 fn catching_consumes_balls_and_party_is_bounded() {
     let mut game = Pokemon::<PoolAllocator>::new(Config::default());
     for _ in 0..100 {
+        if game.state.pending.is_some() {
+            break;
+        }
         game.state.wild = Some(Monster {
             hp: 1,
             ..Monster::new(Element::Grass, 1)
         });
         game.state.balls = 10;
+        let catches = game.state.catches;
         game.step(Action::Catch);
         assert!(game.state.balls == 9 || game.state.balls == 10);
+        if game.state.collection.len() < 5 && game.state.catches > catches {
+            assert_eq!(game.state.collection.len() as u64, game.state.catches);
+            assert!(game.state.pending.is_none());
+        }
     }
-    assert!(game.state.catches > 5);
     assert_eq!(game.state.collection.len(), 5);
+    assert_eq!(game.state.catches, 5);
+    assert_eq!(game.state.pending.unwrap().species, Species::Bulbasaur);
+
+    let catches = game.state.catches;
+    game.step(Action::Run);
+    assert!(game.state.pending.is_none());
+    assert_eq!(game.state.catches, catches);
+    assert_eq!(game.state.collection.len(), 5);
+
+    for _ in 0..100 {
+        if game.state.pending.is_some() {
+            break;
+        }
+        game.state.wild = Some(Monster {
+            hp: 1,
+            ..Monster::of(Species::Psyduck, 1)
+        });
+        game.state.balls = 10;
+        game.step(Action::Catch);
+    }
+    let pending = game.state.pending.unwrap();
+    assert_eq!(pending.species, Species::Psyduck);
+    assert_eq!(game.state.collection.len(), 5);
+    assert_eq!(game.state.catches, catches);
+
+    game.step(Action::Release(0));
+    assert!(game.state.pending.is_none());
+    assert_eq!(game.state.collection.len(), 5);
+    assert_eq!(game.state.catches, catches + 1);
+    assert_eq!(game.state.collection[4], pending);
+
     game.state.balls = 0;
     game.state.wild = Some(Monster::new(Element::Water, 1));
     let before = game.state.clone();
@@ -160,11 +198,11 @@ fn reserves_can_battle_and_switching_costs_a_turn() {
     game.state.collection.push(Monster::new(Element::Water, 2));
     let starter = game.state.starter;
     game.step(Action::Switch(0));
-    assert_eq!(game.state.starter.element, Element::Water);
+    assert_eq!(game.state.starter.element(), Element::Water);
     assert_eq!(game.state.collection[0], starter);
     game.state.wild = Some(Monster::new(Element::Grass, 1));
     game.step(Action::Switch(0));
-    assert_eq!(game.state.starter.element, Element::Fire);
+    assert_eq!(game.state.starter.element(), Element::Fire);
     assert!(game.state.starter.hp < starter.hp);
     let before = game.state.clone();
     for action in [Action::Switch(99), Action::Release(0), Action::Heal] {
@@ -182,7 +220,7 @@ fn fainted_active_uses_reserve_before_blackout() {
     game.step(Action::Attack);
     assert_eq!(game.state.losses, 0);
     assert!(game.state.wild.is_some());
-    assert_eq!(game.state.starter.element, Element::Grass);
+    assert_eq!(game.state.starter.element(), Element::Grass);
     assert_eq!(game.state.collection[0].hp, 0);
     let before = game.state.clone();
     game.step(Action::Switch(0));
@@ -241,6 +279,7 @@ fn varied_player_actions_keep_state_valid_across_allocators() {
         assert!(s.balls <= 10 && s.collection.len() <= 5);
         assert_ne!(MAP[s.position[1]].as_bytes()[s.position[0]], b'#');
         assert!(s.wild.is_none_or(|m| m.hp > 0 && m.hp <= m.max_hp()));
+        assert!(s.pending.is_none_or(|m| m.hp > 0 && m.hp <= m.max_hp()));
     }
 }
 
@@ -306,6 +345,31 @@ fn grass_encounters_have_varied_intervals_and_seeds() {
     assert!(a.windows(2).any(|pair| pair[0] != pair[1]));
     assert_eq!(a, intervals(1));
     assert_ne!(a, intervals(2));
+}
+
+#[test]
+fn grass_encounters_span_several_species() {
+    let mut game = Pokemon::<PoolAllocator>::new(Config {
+        seed: 1,
+        burst: 0,
+        ..Config::default()
+    });
+    game.state.position = [4, 1];
+    let mut seen = [false; Species::ALL.len()];
+    for _ in 0..300 {
+        if let Some(wild) = game.state.wild {
+            assert_eq!(wild, Monster::of(wild.species, wild.level));
+            seen[wild.species as usize] = true;
+            game.step(Action::Run);
+        }
+        let x = game.state.position[0];
+        game.step(if x == 4 { Action::Right } else { Action::Left });
+    }
+    if let Some(wild) = game.state.wild {
+        assert_eq!(wild, Monster::of(wild.species, wild.level));
+        seen[wild.species as usize] = true;
+    }
+    assert!(seen.iter().filter(|flag| **flag).count() >= 4);
 }
 
 #[test]
@@ -388,4 +452,138 @@ fn continuous_trail_matches_pong_particle_lifecycle() {
     check::<HeapAllocator>();
     check::<PoolAllocator>();
     check::<ArenaAllocator>();
+}
+
+#[test]
+fn expired_effect_batches_reuse_arena_storage() {
+    let cfg = Config {
+        burst: 10_000,
+        trail: 0,
+        lifetime: 1,
+        ..Config::default()
+    };
+    let mut arena = Pokemon::<ArenaAllocator>::new(cfg);
+    let mut pool = Pokemon::<PoolAllocator>::new(cfg);
+    for _ in 0..100 {
+        arena.effects(cfg.burst);
+        pool.effects(cfg.burst);
+        assert_eq!(arena.checksum(), pool.checksum());
+        assert_eq!(
+            arena.alloc.reserved_bytes(),
+            cfg.burst * std::mem::size_of::<Particle>()
+        );
+        arena.age();
+        pool.age();
+        assert_eq!(arena.live_particles(), 0);
+    }
+    assert_eq!(arena.created, arena.retired);
+}
+
+#[test]
+fn gameplay_is_independent_of_effect_load_and_allocator_each_turn() {
+    for seed in [1, 42, 2026] {
+        let mut light = Pokemon::<HeapAllocator>::new(Config {
+            seed,
+            burst: 0,
+            trail: 0,
+            ..Config::default()
+        });
+        let heavy = Config {
+            seed,
+            burst: 128,
+            trail: 64,
+            lifetime: 7,
+            dt: 1.0 / 30.0,
+        };
+        let mut pool = Pokemon::<PoolAllocator>::new(heavy);
+        let mut arena = Pokemon::<ArenaAllocator>::new(heavy);
+        for _ in 0..1200 {
+            let action = light.auto_action();
+            assert_eq!(pool.auto_action(), action);
+            assert_eq!(arena.auto_action(), action);
+            light.step(action);
+            pool.step(action);
+            arena.step(action);
+            assert_eq!(light.state(), pool.state());
+            assert_eq!(light.game_checksum(), pool.game_checksum());
+            assert_eq!(light.game_checksum(), arena.game_checksum());
+            assert_eq!(pool.checksum(), arena.checksum());
+        }
+        assert_ne!(light.checksum(), pool.checksum());
+    }
+}
+
+#[test]
+fn invalid_battle_actions_preserve_gameplay_but_advance_the_turn() {
+    let mut game = Pokemon::<PoolAllocator>::new(Config::default());
+    game.state.wild = Some(Monster::of(Species::Oddish, 2));
+    game.state.balls = 0;
+    game.state.collection.push(Monster {
+        hp: 0,
+        ..Monster::of(Species::Psyduck, 1)
+    });
+    let state = game.state().clone();
+    let rng = game.rng;
+    for action in [
+        Action::Catch,
+        Action::Heal,
+        Action::Switch(0),
+        Action::Switch(99),
+        Action::Release(0),
+        Action::Up,
+    ] {
+        let frame = game.frame;
+        game.step(action);
+        assert_eq!(game.state(), &state);
+        assert_eq!(game.rng, rng);
+        assert_eq!(game.frame, frame + 1);
+    }
+}
+
+#[test]
+fn scaled_replay_preserves_resumed_gameplay_and_observers_do_not_change_results() {
+    let cfg = Config::default();
+    let mut game = Pokemon::<PoolAllocator>::new(cfg);
+    let mut explorer = autoplay::Explorer::default();
+    for _ in 0..40 {
+        game.step(explorer.action(game.state()));
+    }
+    let initial = game.snapshot();
+    let mut actions = Vec::new();
+    for _ in 0..120 {
+        let action = explorer.action(game.state());
+        actions.push(action);
+        game.step(action);
+    }
+    let recording = Replay {
+        initial,
+        actions,
+        checksum: game.checksum(),
+    };
+    let reference = replay::<PoolAllocator>(&recording, None).unwrap();
+    for target in [10, 10_000] {
+        let mut observed_time = Duration::ZERO;
+        let mut frames = 0;
+        let watched = benchmark_session::<ArenaAllocator>(
+            cfg,
+            0,
+            Some(&recording),
+            Some(target),
+            Some(&mut |state, frame| {
+                assert_eq!(state.live_particles(), target);
+                assert_eq!(frame.live, target);
+                observed_time += frame.step;
+                frames += 1;
+            }),
+        )
+        .unwrap();
+        let headless =
+            benchmark_session::<PoolAllocator>(cfg, 0, Some(&recording), Some(target), None)
+                .unwrap();
+        assert_eq!(frames, 120);
+        assert_eq!(watched.elapsed, observed_time);
+        assert_eq!(watched.checksum, headless.checksum);
+        assert_eq!(watched.game_checksum, reference.game_checksum);
+        assert_eq!(watched.peak_live, target);
+    }
 }
