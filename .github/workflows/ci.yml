@@ -37,3 +37,9 @@ jobs:
 
       - name: Test
         run: cargo test --all-targets --all-features
+
+      - name: Install chart test dependencies
+        run: python3 -m pip install matplotlib
+
+      - name: Test benchmark charts
+        run: python3 -m unittest discover -s tests -p 'test_*.py'

@@ -70,3 +70,48 @@ fn million_particle_workload_is_identical_on_all_allocators() {
         }
     }
 }
+
+#[test]
+fn replay_can_scale_effects_but_rejects_corrupt_recordings() {
+    use game_engine::{
+        alloc::pool::PoolAllocator,
+        pokemon::{Config, Pokemon, Replay},
+    };
+    let mut game = Pokemon::<PoolAllocator>::new(Config::default());
+    let initial = game.snapshot();
+    let mut actions = Vec::new();
+    for _ in 0..30 {
+        let action = game.auto_action();
+        actions.push(action);
+        game.step(action);
+    }
+    let mut recording = Replay {
+        initial,
+        actions,
+        checksum: game.checksum(),
+    };
+    let path =
+        std::env::temp_dir().join(format!("pokemon-scaled-{}.pokemonrec", std::process::id()));
+    recording
+        .write(std::fs::File::create(&path).unwrap())
+        .unwrap();
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_pokemon"))
+            .args(["--allocator", "pool", "--particles", "10000", "--replay"])
+            .arg(&path)
+            .output()
+            .unwrap()
+    };
+    let output = run();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    recording.checksum ^= 1;
+    recording
+        .write(std::fs::File::create(&path).unwrap())
+        .unwrap();
+    assert!(!run().status.success());
+    std::fs::remove_file(path).unwrap();
+}

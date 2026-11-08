@@ -304,22 +304,25 @@ this engine's `Allocator` trait and `Particle` effects. It includes a small
 2D map with walls, tall-grass encounters, a healing center, a Fire starter,
 Fire/Grass/Water type advantages, turn-based attacks, catching, fleeing,
 experience, leveling, and recovery at the center after defeat. The party holds
-one active monster plus five reserves; later catches are counted and released.
+one active monster plus five reserves. A full-party catch waits: release a
+reserve to keep it, or run to let it go.
 Caught monsters can be switched into battle, and healthy reserves take over
 when the active monster faints. A full-party defeat returns you to the center.
 Healing at the center restores HP and ten capture balls. Battle rewards also
 replenish one ball so automated expeditions can continue.
 
-This is backend-only: no new window or artwork. To drive it from another
-frontend, construct `pokemon::Pokemon::<PoolAllocator>::new(Config::default())`,
+`pokemon-window` draws that same state in a window: a tile field, and a battle
+screen with HP bars and a Fight / Catch / Pokemon / Run menu. The sprites in
+`assets/pokemon/sprites.png` are original 16px art, not ripped artwork. To drive
+it from another frontend, construct `pokemon::Pokemon::<PoolAllocator>::new(Config::default())`,
 call `step(Action::Right)` (or another `Action`) for each turn, and read
 `state()`. One simulation step is one action, not a real-time movement frame.
 Invalid actions do nothing; failed captures and attacks allow a counterattack.
 `auto_action()` supplies a deterministic exploration/battle policy for benchmarks.
 
 ```sh
-# Play interactively in a terminal (no graphical dependencies)
-cargo run --release --no-default-features --bin pokemon-play
+# Play in a window (1024x768). Esc quits and saves.
+cargo run --release --bin pokemon-window
 
 # Automated expedition, using the same allocator flags as Pong
 cargo run --release --no-default-features --bin pokemon -- \
@@ -342,61 +345,52 @@ All allocators receive identical effects. Particles overlap across turns. Battle
 defeat) clears effects and reclaims storage, like a scored point in Pong.
 Retiring an individual particle does not reclaim arena storage. Gameplay state is stored normally;
 the allocation experiment measures particle effects, as in Pong. Timing columns separate setup, simulation, and teardown. `total_ns` is their
-sum; final checksum computation and disk I/O are excluded. Trace collection
-adds overhead when explicitly enabled. The benchmark uses automated play, and `pokemon-play` accepts player commands.
-Terminal play automatically loads `pokemon.save` and saves progress on `quit` or EOF.
-The benchmark remains independent of terminal saves.
+sum; final checksum computation and disk I/O are excluded. Trace observation and drawing are excluded from simulation timing; per-step
+clock instrumentation still has overhead. Play interactively with `pokemon-window`;
+the headless benchmark uses automated play and remains independent of saves.
 
-#### Terminal controls
+#### Window
 
-Run `pokemon-play`, type a command, then press Enter. Use `w/a/s/d` or
-`up/left/down/right` to explore the ASCII map. `@` is your player, `g` is tall
-grass, `#` is a wall, and `H` is the healing center. Walk into grass to find
-wild monsters, then use `attack`, `catch`, or `run`. The screen shows both
-monsters' HP, your level, XP, balls, and action results.
-
-`party` lists reserves; `switch 1` sends out reserve 1 (slots 1–5).
-Switching during battle lets the wild monster counterattack. `release 1`
-makes room for another catch outside battle. At `H`, `heal` restores the
-whole party and capture balls. `map` and `help` do not consume a turn.
-`quit` exits; EOF also exits cleanly. Use `--seed N` for a different expedition
-or `--allocator heap|pool|arena` to choose effect storage.
-
-The terminal goal is to assemble Fire, Grass, and Water in your party. It
-announces completion and allows continued exploration. This is a small playable
-prototype, not a full Pokémon campaign; there are no towns or gyms yet.
+`pokemon-window` loads `pokemon.save` and saves progress when you exit. Arrows or WASD walk one tile per
+press. In a battle those keys move a menu, and Enter, Space, or Z confirms:
+Fight, Catch, Pokemon, or Run. Pokemon opens the party; Up and Down pick a
+reserve, and confirm sends it out. X or Backspace closes the party. F, C, R,
+and 1–5 still attack, catch, run, and switch. H heals on the center. Shift
+plus 1–5 releases a reserve outside battle. A full-party catch waits: 1–5
+drops a reserve to keep it, and R, X, or Backspace lets it go. F and C still
+attack and catch, and Run during a battle still flees. Esc quits and saves.
 
 #### Random encounters and saved progress
 
-New terminal adventures use a fresh random seed. Every successful step into
+New GUI adventures use a fresh random seed. Every successful step into
 tall grass has a one-in-three encounter chance, so the number of steps between
 encounters varies. Encounters are turn-based, not wall-clock timers: reading a
 prompt does not trigger a fight. `--seed 1` makes a new adventure reproducible
 for testing; an existing save takes precedence. The headless benchmark retains
 its fixed default seed so allocator comparisons stay reproducible.
 
-Charmander, Bulbasaur, and Squirtle have names and descriptions of appearance
-and type advantages. Descriptions appear on encounters and in `party`; `look`
-describes your active Pokémon and the current wild Pokémon without using a turn.
+Tall grass has three species of each element: Charmander, Vulpix, and
+Growlithe; Bulbasaur, Oddish, and Bellsprout; Squirtle, Psyduck, and Poliwag.
+Descriptions appear in the GUI message log on encounters.
 
 ```sh
 # Continue your saved adventure, or create one if no save exists
-cargo run --release --no-default-features --bin pokemon-play
+cargo run --release --bin pokemon-window
 
 # Separate save slot
-cargo run --release --no-default-features --bin pokemon-play -- --save adventure.save
+cargo run --release --bin pokemon-window -- --save adventure.save
 
 # Start fresh (replaces the chosen save when you save or quit)
-cargo run --release --no-default-features --bin pokemon-play -- --new
+cargo run --release --bin pokemon-window -- --new
 ```
 
-Type `save` for a checkpoint. `quit` and EOF save automatically; run the same
-command from the same directory to resume. Snapshots preserve your position,
+Exit with Esc to save automatically; run the same command from the same
+directory to resume. Snapshots preserve your position,
 party, HP, XP, balls, current battle, statistics, random state, and live effects.
 They can be loaded with any allocator. A temporary file is flushed and renamed
 to replace the save; malformed saves produce an error instead of being silently
 overwritten. `--no-save` disables persistence for isolated tests. Forced process
-termination does not save unsaved turns; use `save` to checkpoint longer sessions.
+termination does not save unsaved turns.
 
 #### Pokémon allocator experiment (same workflow as Pong)
 
@@ -408,7 +402,7 @@ it does not compare allocation strategies for party members or map tiles.
 
 ```sh
 # 1. Play normally, saving progress and recording this session's actions
-cargo run --release --no-default-features --bin pokemon-play -- --record results/session.pokemonrec
+cargo run --release --bin pokemon-window -- --record results/session.pokemonrec
 
 # 2. Replay the identical session on every allocator, with warmups and repeated trials
 python3 scripts/bench_pokemon.py --replay results/session.pokemonrec --trials 10 --warmups 2 --out results/pokemon-human.csv
@@ -422,7 +416,7 @@ python3 scripts/bench_pokemon.py --replay results/session.pokemonrec --trials 1 
 
 A recording includes the exact starting snapshot, random state, action list,
 and expected final checksum. This works when continuing an existing save.
-Reading descriptions, waiting for keyboard input, saving, and terminal output
+Reading descriptions, waiting for keyboard input, saving, and rendering
 are excluded from the replay workload. Random events repeat exactly across
 allocators. Each replay verifies the recorded checksum; the comparison script
 also checks identical gameplay outcomes and particle work across all trials.
@@ -458,7 +452,7 @@ results rather than generalizing to all games. `--replay` rejects workload overr
 python3 scripts/bench_pokemon.py --counts 1000000 5000000 --frames 12 --trials 1 --warmups 0 --out results/pokemon-capacity.csv
 
 # Research sweep: 10K through 5M, 100 turns, repeated measurements.
-# Also writes results/pokemon-counts.png (simulation time and peak RSS vs object count).
+# Also writes results/pokemon-counts.png (simulated FPS and RSS per particle vs object count).
 python3 scripts/bench_pokemon.py --counts 10000 100000 1000000 5000000 --frames 100 --trials 10 --warmups 2 --out results/pokemon-counts.csv
 ```
 
@@ -494,7 +488,7 @@ measurement; the additional setup/cleanup columns remain available.
 python3 scripts/bench_pokemon.py --frames 3600 --trials 10 --warmups 2 --out results/pokemon-pong-style.csv
 ```
 
-The script writes `results/pokemon-pong-style.png` in the same three-row layout as a Pong trace: step time, live particles, and reserved memory for heap, pool, and arena. The PNG comes from a separate warmed replay, and the script checks that its gameplay totals match the timed runs. `--trace` records the timing trials themselves and includes that overhead in `sim_ns`. A count or burst sweep writes the two-panel object-count chart, using median simulation time and median peak RSS. Both axes are logarithmic, since the counts span several orders of magnitude. `--no-plot` skips the PNG. `scripts/plot.py` still reads the CSVs directly.
+The script writes `results/pokemon-pong-style.png` in the same three-row layout as a Pong trace: step time, live particles, and reserved memory for heap, pool, and arena. The PNG comes from a separate warmed replay, and the script checks that its gameplay totals match the timed runs. `--trace` records the timing trials themselves; trace callbacks are excluded from `sim_ns`. A count or burst sweep writes the two-panel object-count chart, using median simulated FPS and median whole-process peak RSS per peak live particle. Both axes are logarithmic, since the counts span several orders of magnitude. `--no-plot` skips the PNG. `scripts/plot.py` still reads the CSVs directly.
 
 Use `--trail` to scale continuous particle load and `--bursts` to scale action
 bursts while retaining overlapping lifetimes. Actual peak live count depends
@@ -509,3 +503,138 @@ recordings require re-recording because the particle workload has changed.
 New recordings use version 2, and new saves preserve trail and timestep values.
 A resumed save retains its recorded particle configuration; use `--new` for
 new defaults. Existing CSVs are historical and are not rewritten automatically.
+
+
+### One-command Pokémon test suite
+
+```sh
+# Requires Rust and a Python environment with matplotlib.
+python3 -m pip install matplotlib
+python3 scripts/test_pokemon.py
+
+# Longer benchmark, 10k through 5 million live particles (10 repeats).
+python3 scripts/test_pokemon.py --preset full
+
+# Customize repeats, seeds, and destination.
+python3 scripts/test_pokemon.py --trials 5 --seeds 7 42 --out results/my-run
+```
+
+The quick preset runs Pokémon unit/CLI tests and Python chart tests, then
+compares all three allocators across three deterministic expedition seeds and
+1k, 10k, and 100k particle loads, with three timing trials per case. Each run
+checks gameplay checksums and particle totals across allocators. Failure stops
+the suite with a nonzero exit code. Runs are sequential to avoid competing for
+CPU and memory; use a different output directory to retain earlier results.
+
+`results/pokemon-suite/` contains an expedition trace chart per seed,
+`scaling.png`, raw CSV measurements, and `run.json` with the commands, platform,
+timestamps, and pass/fail status. The scaling chart follows the Boss Fight
+example: median simulated steps per second and whole-process peak RSS per peak
+live particle, with interquartile error bars. FPS here measures headless logic,
+not rendering or playable frame rate. RSS includes process overhead, whereas
+the expedition chart shows allocator-reserved memory. Timed samples exclude
+trace collection; separate deterministic runs generate the trace charts.
+
+
+### Pokémon scaling: 10k to 5 million particles
+
+```sh
+# Correctness tests, three expedition seeds, then six particle loads × three allocators × three trials.
+python3 scripts/test_pokemon.py --preset scaling --out results/pokemon-5m
+
+# Choose your own loads, trial length, and repeats.
+python3 scripts/test_pokemon.py --counts 10000 100000 1000000 5000000 --frames 60 --trials 5
+
+# Only run the particle benchmark and chart, without the test suite or expeditions.
+python3 scripts/bench_pokemon.py --counts 10000 100000 500000 1000000 2500000 5000000 --frames 30 --trials 3 --warmups 1 --out results/pokemon-scaling.csv
+```
+
+The `scaling` preset measures 10k, 100k, 500k, 1M, 2.5M, 5M, and 10M peak live
+particles over 30 turns per trial. `full` uses the same loads with 100 turns and
+10 repeats. Counts are particle effects, not Pokémon characters. The suite now
+maintains these live targets after every turn, like Boss Fight. The separate
+`bench_pokemon.py --counts` option retains the original one-turn churn test. These are
+headless simulation benchmarks, not window-rendering benchmarks.
+
+Expired effect batches now reclaim arena storage as soon as no live handles
+remain, so repeated short-lived bursts reuse blocks rather than accumulating
+memory until a battle reset. Effect spawning also reserves handle capacity
+once per batch. A regression test checks storage reuse over 100 batches and
+checks gameplay/particle checksums against the pool allocator.
+
+
+### Pokémon implementation structure
+
+Like Boss Fight, Pokémon keeps deterministic game rules independent from
+allocator-backed effects and rendering:
+
+- `src/pokemon/gameplay.rs`: battle turns, pending catches, exploration, party
+  switching, healing, and rewards. Each mode has its own action handler.
+- `src/pokemon/effects.rs`: effect creation, aging, retirement, and safe arena
+  reuse after the last live handle expires.
+- `src/pokemon/mod.rs`: public game state, turn orchestration, automated input,
+  checksums, and benchmark driving.
+- `render.rs`, `save.rs`, and `replay.rs`: presentation and I/O.
+
+`Pokemon::game_checksum()` includes gameplay state, turn number, and RNG state,
+but excludes effects. The benchmark CSV exposes this as `game_checksum` and
+rejects a sweep if changing particle load changes gameplay. The existing full
+`checksum()` still includes effects and preserves the save/replay checksum
+format. Tests compare gameplay after every turn across seeds, particle counts,
+lifetimes, timesteps, and allocators, and check invalid battle commands do not
+consume resources or advance gameplay RNG.
+
+### Watch automated Pokémon play in the GUI
+
+```sh
+cargo run --release --bin pokemon-window -- --autoplay
+
+# Use the original headless benchmark policy; close after 3,600 turns.
+cargo run --release --bin pokemon-window -- --autoplay --benchmark-policy --seed 1 --trail 64 --turns 3600 --turn-delay 1
+
+# Record visible autoplay for later headless benchmarking.
+cargo run --release --bin pokemon-window -- --autoplay --record results/autoplay.pokemonrec --turns 600
+```
+
+Autoplay explores both grass patches, routes around walls, battles and catches
+wild monsters, and returns to the center when health or balls run low. It starts
+a fresh seed-1 game by default. Use `--benchmark-policy` to watch the original
+headless benchmark patrol instead. It never loads or overwrites
+`pokemon.save`. Press **P** to pause/resume or **Esc** to close. The default
+pacing is about 10 turns per second; `--turn-delay 1` runs up to 60 turns per
+second. Rendering between turns does not insert extra game actions. The title
+shows autoplay status and turn count. GUI FPS includes rendering and pacing,
+so it is not interchangeable with the headless scaling chart's simulation FPS.
+
+
+### Watch Pokémon benchmarks like Boss Fight
+
+```sh
+# Record GUI autoplay (or omit --autoplay to play yourself).
+cargo run --release --bin pokemon-window -- --autoplay --turns 120 --turn-delay 1 --record results/pokemon-demo.pokemonrec
+
+# Replay the SAME recorded actions at each load, in a window, on all allocators.
+python3 scripts/bench_pokemon.py --replay results/pokemon-demo.pokemonrec --particles 10000 100000 500000 1000000 2500000 5000000 --trials 3 --warmups 1 --watch --out results/pokemon-watched.csv
+
+# One-command correctness suite plus a visible 10k–5M sweep; no recording needed.
+python3 scripts/test_pokemon.py --preset scaling --watch
+
+# Or use your recording in that suite.
+python3 scripts/test_pokemon.py --preset scaling --watch --replay results/pokemon-demo.pokemonrec
+```
+
+`--particles` maintains an exact live effect target after every turn, including
+battle transitions. It changes visual effects only. Without a recording it uses
+the GUI exploration policy. `--counts` remains a separate one-turn churn test.
+Warmups run headlessly; `--watch` displays measured trials, redrawing at most
+once per 16 ms. Closing a trial window or pressing Esc lets that trial finish
+headlessly, as in Boss Fight. Further trials open their own windows.
+
+The original recording is validated before scaling; gameplay checksums must
+match it at every load, and full checksums/particle work must match across
+allocators at each load. CSV results are saved after each successful load.
+Watch/trace simulation timing sums step times and excludes drawing and observer
+callbacks. Peak process RSS includes GUI resources when watching, so compare
+watched and headless memory results separately. The CSV tags watched runs with
+`watch` and records the requested `particles`. GUI windows are unpaced benchmark
+views: short trials may finish quickly. Use GUI autoplay for leisurely viewing.

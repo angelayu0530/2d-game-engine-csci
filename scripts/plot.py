@@ -106,7 +106,7 @@ def scale_axis(rows):
     def values(name):
         if not rows or name not in rows[0]:
             return set()
-        return {int(row[name]) for row in rows}
+        return {int(row[name]) for row in rows if row.get(name) not in (None, "")}
 
     particles = values("particles")
     if len(particles) >= 2:
@@ -129,11 +129,14 @@ def write_game_summary(rows, out: Path) -> None:
             "summary CSV has one particle load. "
             "Pass trace CSVs to plot step time, live particles, and reserved memory."
         )
+    rows = [dict(row) for row in rows]
     counts, allocators, grouped = series(rows, field)
-    if field == "particles" and "frames" in rows[0]:
-        # Boss fight: one step is one frame, so show how many frames per
-        # second the simulation alone could sustain at each load.
+    if all("frames" in row for row in rows):
+        # Each automated turn is a simulation step, not a rendered frame.
+        # Normalize duration and memory to compare different workload sizes.
         for row in rows:
+            if any(int(row[key]) <= 0 for key in ("frames", "sim_ns", "peak_live")):
+                raise ValueError("FPS charts require positive frames, sim_ns, and peak_live")
             row["fps"] = str(int(row["frames"]) * 1e9 / int(row["sim_ns"]))
             row["rss_per_particle"] = str(int(row["peak_rss_bytes"]) / int(row["peak_live"]))
         plot(
@@ -151,6 +154,7 @@ def write_game_summary(rows, out: Path) -> None:
             mem_scale=1,
             mem_label="median peak RSS per peak live particle (bytes)\n(whole process, lower is better)",
             mem_line=(PARTICLE_BYTES, f"Particle struct ({PARTICLE_BYTES} B)"),
+            title="Pokémon Benchmark Results" if rows[0].get("mode", "").startswith("pokemon-") else None,
         )
         print_table(counts, allocators, grouped, time_field="fps", time_header="fps", scale=1)
         print_per_particle(counts, allocators, grouped)
@@ -380,8 +384,11 @@ def plot(
     mem_scale=1e6,
     mem_label="median peak RSS (MB)",
     mem_line=None,
+    title=None,
 ) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(9.2, 4.2), layout="constrained")
+    if title:
+        fig.suptitle(title, fontfamily="serif", fontsize=22)
     draw(axes[0], counts, allocators, grouped, time_field, time_scale, time_label, log_y=log_y)
     for fps in fps_lines:
         axes[0].axhline(fps, color="0.35", linewidth=1, linestyle=":")

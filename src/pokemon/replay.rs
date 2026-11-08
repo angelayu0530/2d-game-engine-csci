@@ -20,20 +20,24 @@ impl Replay {
     pub fn config(&self) -> io::Result<super::Config> {
         let mut words = self.initial.split_whitespace();
         let version = words.next();
-        if !matches!(version, Some("POKEMON_SAVE_1" | "POKEMON_SAVE_2")) {
+        if !matches!(
+            version,
+            Some("POKEMON_SAVE_1" | "POKEMON_SAVE_2" | "POKEMON_SAVE_3")
+        ) {
             return Err(invalid());
         }
         let mut next = || words.next().ok_or_else(invalid);
+        let has_trail = matches!(version, Some("POKEMON_SAVE_2" | "POKEMON_SAVE_3"));
         let cfg = super::Config {
             seed: next()?.parse().map_err(|_| invalid())?,
             burst: next()?.parse().map_err(|_| invalid())?,
             lifetime: next()?.parse().map_err(|_| invalid())?,
-            trail: if version == Some("POKEMON_SAVE_2") {
+            trail: if has_trail {
                 next()?.parse().map_err(|_| invalid())?
             } else {
                 0
             },
-            dt: if version == Some("POKEMON_SAVE_2") {
+            dt: if has_trail {
                 next()?.parse().map_err(|_| invalid())?
             } else {
                 1.0 / 60.0
