@@ -338,11 +338,14 @@ impl<A: Allocator> Pong<A> {
     }
 }
 
+/// Called after every traced step with the game and that step's sample.
+pub type Observer<'a, A> = &'a mut dyn FnMut(&Pong<A>, Frame);
+
 pub fn run<A: Allocator>(
     cfg: &PongConfig,
     cpu: &CpuConfig,
     frames: u32,
-    trace: Option<&mut dyn FnMut(Frame)>,
+    trace: Option<Observer<'_, A>>,
 ) -> Outcome {
     let mut left = Cpu::new(Side::Left, *cpu);
     let mut right = Cpu::new(Side::Right, *cpu);
@@ -361,14 +364,17 @@ fn drive<A: Allocator>(
     mut game: Pong<A>,
     frames: usize,
     mut input: impl FnMut(&Pong<A>, usize) -> Input,
-    mut trace: Option<&mut dyn FnMut(Frame)>,
+    mut trace: Option<Observer<'_, A>>,
 ) -> Outcome {
     let start = Instant::now();
     for index in 0..frames {
         let input = input(&game, index);
         match trace.as_deref_mut() {
             None => game.step(input),
-            Some(observe) => observe(game.timed_step(input)),
+            Some(observe) => {
+                let frame = game.timed_step(input);
+                observe(&game, frame);
+            }
         }
     }
     game.finish(start.elapsed())

@@ -3,13 +3,18 @@ use std::{
     hint::black_box,
     io::{self, BufReader, BufWriter, Write},
     path::PathBuf,
+    time::Instant,
 };
 
 use clap::Parser;
 use game_engine::{
     alloc::{Allocator, Backend},
+    canvas::Canvas,
     memory::peak_rss_bytes,
-    pong::{CpuConfig, Frame, Outcome, PongConfig, Replay, TRACE_HEADER, TraceMode, replay, run},
+    pong::{
+        self, CpuConfig, Frame, HEIGHT, Observer, Outcome, PongConfig, Replay, TRACE_HEADER,
+        TraceMode, WIDTH, replay, run,
+    },
     with_allocator,
 };
 
@@ -57,6 +62,12 @@ struct Cli {
         help = "Write one CSV row per frame of every measured trial here, for scripts/plot.py"
     )]
     trace: Option<PathBuf>,
+    #[arg(
+        long,
+        requires = "trace",
+        help = "Also draw every traced frame to an offscreen canvas, as `play` does, and record its time as draw_ns"
+    )]
+    draw: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -91,12 +102,16 @@ fn play<A: Allocator>(cli: &Cli, recorded: Option<&Replay>) -> io::Result<()> {
         seed: cli.seed,
         ..CpuConfig::default()
     };
-    let match_once = |trace: Option<&mut dyn FnMut(Frame)>| -> Outcome {
+    let match_once = |trace: Option<Observer<'_, A>>| -> Outcome {
         match recorded {
             Some(recorded) => replay::<A>(recorded, trace),
             None => run::<A>(&cfg, &cpu, cli.frames, trace),
         }
     };
+    let mut canvas = Canvas::new(
+        if cli.draw { WIDTH as usize } else { 0 },
+        if cli.draw { HEIGHT as usize } else { 0 },
+    );
     let mut trace_out = match &cli.trace {
         Some(path) => {
             let mut out = BufWriter::new(File::create(path)?);
@@ -117,7 +132,15 @@ fn play<A: Allocator>(cli: &Cli, recorded: Option<&Replay>) -> io::Result<()> {
     for trial in 0..cli.trials {
         trace_buf.clear();
         let result = match &mut trace_out {
-            Some(_) => match_once(Some(&mut |frame| trace_buf.push(frame))),
+            Some(_) => match_once(Some(&mut |game, mut frame| {
+                if cli.draw {
+                    let start = Instant::now();
+                    pong::draw(game, &mut canvas);
+                    frame.draw = start.elapsed();
+                    black_box(&mut canvas);
+                }
+                trace_buf.push(frame);
+            })),
             None => match_once(None),
         };
         println!(

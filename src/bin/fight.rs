@@ -3,12 +3,17 @@ use std::{
     hint::black_box,
     io::{self, BufReader, BufWriter, Write},
     path::PathBuf,
+    time::Instant,
 };
 
 use clap::Parser;
 use game_engine::{
     alloc::{Allocator, Backend},
-    fight::{Fight, FightConfig, Frame, Input, Replay, TRACE_HEADER, run},
+    canvas::Canvas,
+    fight::{
+        Fight, FightConfig, Frame, HEIGHT, Input, Replay, TRACE_HEADER, WIDTH, render::Renderer,
+        run,
+    },
     memory::peak_rss_bytes,
     with_allocator,
 };
@@ -42,6 +47,12 @@ struct Cli {
         help = "Write one CSV row per step of every measured trial here, for scripts/plot.py"
     )]
     trace: Option<PathBuf>,
+    #[arg(
+        long,
+        requires = "trace",
+        help = "Also draw every traced step to an offscreen canvas, as fight-window does, and record its time as draw_ns"
+    )]
+    draw: bool,
     #[arg(
         long,
         help = "Show each measured trial in a window as it runs (needs the default `window` feature). \
@@ -182,9 +193,21 @@ fn bench<A: Allocator>(cli: &Cli, recorded: &Replay) -> io::Result<()> {
         false => None,
     };
     let tracing = trace_out.is_some();
+    let mut drawing = cli.draw.then(|| {
+        (
+            Renderer::new(),
+            Canvas::new(WIDTH as usize, HEIGHT as usize),
+        )
+    });
     for trial in 0..cli.trials {
         trace_buf.clear();
-        let mut observe = |fight: &Fight<A>, frame: Frame| {
+        let mut observe = |fight: &Fight<A>, mut frame: Frame| {
+            if let Some((renderer, canvas)) = &mut drawing {
+                let start = Instant::now();
+                renderer.draw(fight, canvas);
+                frame.draw = start.elapsed();
+                black_box(&mut *canvas);
+            }
             if tracing {
                 trace_buf.push(frame);
             }
@@ -192,8 +215,6 @@ fn bench<A: Allocator>(cli: &Cli, recorded: &Replay) -> io::Result<()> {
             if let Some(view) = &mut view {
                 view.show(fight, trial, frame.index as usize + 1, frames);
             }
-            #[cfg(not(feature = "window"))]
-            let _ = fight;
         };
         let result = if tracing || cli.watch {
             run::<A>(&cfg, inputs, Some(&mut observe))

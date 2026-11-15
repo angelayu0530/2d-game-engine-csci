@@ -1,6 +1,6 @@
 use std::io::{self, BufRead, Write};
 
-use super::{Frame, Input, Outcome, Pong, PongConfig, drive};
+use super::{Input, Observer, Outcome, Pong, PongConfig, drive};
 use crate::alloc::Allocator;
 
 const MAGIC: &str = "pong-replay v1";
@@ -61,7 +61,7 @@ impl Replay {
     }
 }
 
-pub fn replay<A: Allocator>(replay: &Replay, trace: Option<&mut dyn FnMut(Frame)>) -> Outcome {
+pub fn replay<A: Allocator>(replay: &Replay, trace: Option<Observer<'_, A>>) -> Outcome {
     drive(
         Pong::<A>::new(&replay.cfg),
         replay.inputs.len(),

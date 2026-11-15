@@ -47,9 +47,9 @@ src/bin/fight.rs        headless boss fight benchmark: replays a recording at an
 assets/tiny-dungeon/    Kenney's Tiny Dungeon sprite sheet (CC0) and its license
 assets/bow.png          16x16 bow (straight + 45°) in the Tiny Dungeon palette, made for this project
 results/                CSV output and plots (gitignored except this folder)
-scripts/bench.py        runs every allocator N times per count, writes CSV, prints a summary
+scripts/bench.py        basic-workload summary per allocator and count, then per-frame traces of every game, charted as a games x metrics grid per count
 scripts/bench_fight.py  replays one recorded fight on every allocator at 1k..10M particles
-scripts/plot.py         plots bench.csv or a game summary vs. object count, or --trace CSVs vs. frame
+scripts/plot.py         plots bench.csv or a game summary vs. object count, or --trace CSVs vs. frame (--grid: games x metrics)
 ```
 
 ## Workload
@@ -98,6 +98,51 @@ python3 scripts/bench.py --runs 5 --counts 10000 100000 1000000
 Peak RSS is a per-process high-water mark, so each allocator runs in its own
 process. `scripts/bench.py` fails if final-state checksums differ between
 allocators at the same count.
+
+### Per-frame comparison across games
+
+After the summary, `scripts/bench.py` runs every game at every count with
+`--trace`, one fresh process per allocator with no warmup and one trial, and
+writes `results/traces/<count>/<game>-<allocator>.csv`. Each count gets one
+chart, `results/bench-<count>.svg` (for example `bench-10k.svg`): one column
+per game, one row per metric, one line per allocator.
+
+| column    | workload at count N                                                                          |
+|-----------|----------------------------------------------------------------------------------------------|
+| `basic`   | `game-engine --count N --updates F`: frame 0 spawns N, frames 1..F update, the last tears down |
+| `pong`    | CPU vs CPU, `--trail N/45 --burst N/90 --lifetime 45` (steady population about N)            |
+| `pokemon` | automated, `--trail 2N/135 --burst N/135 --lifetime 45` (bursts on nearly every turn)        |
+| `fight`   | `--replay results/fight.fightrec --particles N` (the first F steps)                           |
+
+F is `--frames` (default 600). The rows:
+
+- FPS: 1 / frame time, rolling median, with a dotted 60 fps line. In the
+  game columns a frame is the step plus drawing it to an offscreen canvas
+  with the same draw code as the game's window (`--draw`, recorded as
+  `draw_ns`); `basic` has no renderer, so its FPS is logic only. The window
+  itself also pays to put the picture on screen, is capped at 60 fps, and
+  runs extra catch-up updates when a frame is slow, so it shows lower FPS
+  than these charts. The legend gives average FPS and "1% low" FPS (the FPS
+  of the slowest 1% of frames).
+- lowest FPS: rolling min, so allocation stalls show as dips.
+- live particles and allocations + frees per frame: the workload. Identical
+  for every allocator (the script checks this), so the three lines overlap.
+- allocator reserved bytes, and storage utilization (live bytes ÷ reserved).
+  Heap reserves exactly its live objects, so it is always 100%; its real
+  overhead shows in RSS.
+- process RSS right now (not peak), read after each step.
+- minor page faults, cumulative: first touches of fresh memory, counted
+  around each step.
+
+Every trace CSV carries `created`, `retired`, and `minor_faults` for that step
+and `rss_bytes` after it; the timing excludes these reads. With 3 counts and
+600 frames the sweep takes well under a minute.
+
+```sh
+python3 scripts/bench.py --no-summary                       # traces and grids only
+python3 scripts/bench.py --no-summary --games basic fight --frames 1200
+python3 scripts/plot.py --grid --csv results/traces/1M/*.csv --out results/bench-1M.svg
+```
 
 ### Pong
 
@@ -338,7 +383,8 @@ cargo test --no-default-features
 
 The CLI emits summary CSV with gameplay outcomes, checksum, particle counts,
 peak allocator storage, simulation time, and process peak RSS. `--trace` emits
-per-action time, live particles, reserved bytes, wins, and catches.
+per-action time, live particles, reserved bytes, wins, catches, particles
+created and retired that turn, minor page faults, and current RSS.
 `scripts/plot.py` accepts both Pokémon and Pong trace CSVs.
 `--burst` controls effects per action and `--lifetime` their lifetime in steps.
 All allocators receive identical effects. Particles overlap across turns. Battle completion (win, catch, escape, or full-party

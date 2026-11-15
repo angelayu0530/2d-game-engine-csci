@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::{
     alloc::Allocator,
+    memory,
     particle::{Particle, splitmix64},
 };
 
@@ -491,6 +492,10 @@ impl<A: Allocator> Drop for Pokemon<A> {
     }
 }
 
+/// One turn's cost and state. `created`, `retired`, and `minor_faults` count
+/// this turn only; `rss_bytes` is read after it, outside its timing. `draw`
+/// is the time to draw the turn afterwards, zero unless the caller draws and
+/// times it.
 #[derive(Debug, Clone, Copy)]
 pub struct Frame {
     pub index: u32,
@@ -499,6 +504,11 @@ pub struct Frame {
     pub reserved_bytes: usize,
     pub wins: u64,
     pub catches: u64,
+    pub created: u64,
+    pub retired: u64,
+    pub minor_faults: u64,
+    pub rss_bytes: usize,
+    pub draw: Duration,
 }
 
 pub fn run<A: Allocator>(
@@ -594,6 +604,8 @@ fn drive_observed<A: Allocator>(
     let start = Instant::now();
     let mut simulation = Duration::ZERO;
     for index in 0..steps {
+        let (created, retired) = (game.created, game.retired);
+        let faults = observe.as_ref().map_or(0, |_| memory::minor_faults());
         let step = observe.as_ref().map(|_| Instant::now());
         let action = input(&game, index);
         game.step(action);
@@ -614,6 +626,11 @@ fn drive_observed<A: Allocator>(
                     reserved_bytes: game.alloc.reserved_bytes(),
                     wins: game.state.wins,
                     catches: game.state.catches,
+                    created: game.created - created,
+                    retired: game.retired - retired,
+                    minor_faults: memory::minor_faults() - faults,
+                    rss_bytes: memory::current_rss_bytes(),
+                    draw: Duration::ZERO,
                 },
             );
         }
