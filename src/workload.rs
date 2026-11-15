@@ -1,9 +1,13 @@
 use std::{
     hint::black_box,
+    io::{self, Write},
     time::{Duration, Instant},
 };
 
-use crate::{alloc::Allocator, particle::Particle};
+use crate::{alloc::Allocator, memory, particle::Particle};
+
+pub const TRACE_HEADER: &str = "mode,allocator,count,trial,frame,phase,step_ns,live,\
+                                reserved_bytes,created,retired,minor_faults,rss_bytes";
 
 #[derive(Debug, Clone, Copy)]
 pub struct WorkloadConfig {
@@ -34,8 +38,76 @@ pub struct RunResult {
     pub reserved_bytes: usize,
 }
 
-pub fn run<A: Allocator>(cfg: &WorkloadConfig) -> RunResult {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    /// Setup plus creating every particle.
+    Spawn,
+    /// One pass updating every particle.
+    Update,
+    /// Retiring every particle, reclaiming, and dropping the allocator.
+    Teardown,
+}
+
+impl Phase {
+    pub fn label(self) -> &'static str {
+        match self {
+            Phase::Spawn => "spawn",
+            Phase::Update => "update",
+            Phase::Teardown => "teardown",
+        }
+    }
+}
+
+/// One traced step: frame 0 spawns, frames `1..=updates` update, and the last
+/// frame tears down. `created`, `retired`, and `minor_faults` count this step
+/// only; `rss_bytes` is read after it, outside its timing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Frame {
+    pub index: u32,
+    pub phase: Phase,
+    pub step: Duration,
+    pub live: usize,
+    pub reserved_bytes: usize,
+    pub created: u64,
+    pub retired: u64,
+    pub minor_faults: u64,
+    pub rss_bytes: usize,
+}
+
+impl Frame {
+    pub fn write_csv(
+        &self,
+        out: &mut impl Write,
+        allocator: &str,
+        count: usize,
+        trial: u32,
+    ) -> io::Result<()> {
+        writeln!(
+            out,
+            "basic,{allocator},{count},{trial},{},{},{},{},{},{},{},{},{}",
+            self.index,
+            self.phase.label(),
+            self.step.as_nanos(),
+            self.live,
+            self.reserved_bytes,
+            self.created,
+            self.retired,
+            self.minor_faults,
+            self.rss_bytes,
+        )
+    }
+}
+
+/// Runs the workload once. With `observe`, every update pass is timed on its
+/// own and `phases.update` is the sum of those times, so the observer is not
+/// counted.
+pub fn run<A: Allocator>(
+    cfg: &WorkloadConfig,
+    mut observe: Option<&mut dyn FnMut(Frame)>,
+) -> RunResult {
     let mut phases = Phases::default();
+    let count = cfg.count as u64;
+    let mut faults = observe.as_ref().map_or(0, |_| memory::minor_faults());
 
     let start = Instant::now();
     let mut alloc = A::with_capacity(cfg.count);
@@ -48,16 +120,57 @@ pub fn run<A: Allocator>(cfg: &WorkloadConfig) -> RunResult {
     }
     phases.spawn = start.elapsed();
     let reserved_bytes = alloc.reserved_bytes();
+    if let Some(observe) = observe.as_deref_mut() {
+        let now = memory::minor_faults();
+        observe(Frame {
+            index: 0,
+            phase: Phase::Spawn,
+            step: phases.setup + phases.spawn,
+            live: alloc.live_count(),
+            reserved_bytes,
+            created: count,
+            retired: 0,
+            minor_faults: now - faults,
+            rss_bytes: memory::current_rss_bytes(),
+        });
+        faults = memory::minor_faults();
+    }
 
-    let start = Instant::now();
-    for _ in 0..cfg.updates {
-        for &handle in &handles {
-            alloc.get_mut(handle).update(cfg.dt);
+    match observe.as_deref_mut() {
+        None => {
+            let start = Instant::now();
+            for _ in 0..cfg.updates {
+                update(&mut alloc, &handles, cfg.dt);
+            }
+            phases.update = start.elapsed();
+        }
+        Some(observe) => {
+            for index in 1..=cfg.updates {
+                let start = Instant::now();
+                update(&mut alloc, &handles, cfg.dt);
+                let step = start.elapsed();
+                phases.update += step;
+                let now = memory::minor_faults();
+                observe(Frame {
+                    index,
+                    phase: Phase::Update,
+                    step,
+                    live: alloc.live_count(),
+                    reserved_bytes: alloc.reserved_bytes(),
+                    created: 0,
+                    retired: 0,
+                    minor_faults: now - faults,
+                    rss_bytes: memory::current_rss_bytes(),
+                });
+                faults = memory::minor_faults();
+            }
         }
     }
-    phases.update = start.elapsed();
 
     let checksum = black_box(checksum(&alloc, &handles));
+    if observe.is_some() {
+        faults = memory::minor_faults();
+    }
 
     let start = Instant::now();
     for handle in handles.drain(..) {
@@ -69,11 +182,30 @@ pub fn run<A: Allocator>(cfg: &WorkloadConfig) -> RunResult {
     alloc.reclaim();
     drop(alloc);
     phases.reclaim = start.elapsed();
+    if let Some(observe) = observe {
+        observe(Frame {
+            index: cfg.updates + 1,
+            phase: Phase::Teardown,
+            step: phases.retire + phases.reclaim,
+            live: 0,
+            reserved_bytes: 0,
+            created: 0,
+            retired: count,
+            minor_faults: memory::minor_faults() - faults,
+            rss_bytes: memory::current_rss_bytes(),
+        });
+    }
 
     RunResult {
         phases,
         checksum,
         reserved_bytes,
+    }
+}
+
+fn update<A: Allocator>(alloc: &mut A, handles: &[A::Handle], dt: f32) {
+    for &handle in handles {
+        alloc.get_mut(handle).update(dt);
     }
 }
 
@@ -106,8 +238,8 @@ mod tests {
             updates: 20,
             dt: 1.0 / 60.0,
         };
-        let heap = run::<HeapAllocator>(&cfg).checksum;
-        assert_eq!(run::<PoolAllocator>(&cfg).checksum, heap, "pool");
-        assert_eq!(run::<ArenaAllocator>(&cfg).checksum, heap, "arena");
+        let heap = run::<HeapAllocator>(&cfg, None).checksum;
+        assert_eq!(run::<PoolAllocator>(&cfg, None).checksum, heap, "pool");
+        assert_eq!(run::<ArenaAllocator>(&cfg, None).checksum, heap, "arena");
     }
 }
