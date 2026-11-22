@@ -1,8 +1,13 @@
 use clap::Parser;
 use game_engine::{
     alloc::{Allocator, Backend},
+    canvas::Canvas,
     memory::peak_rss_bytes,
-    pokemon::{Config, Frame, Observer, Replay, benchmark_session, replay},
+    pokemon::{
+        Config, Frame, Observer, Replay, benchmark_session,
+        render::{HEIGHT, Hud, Renderer, WIDTH},
+        replay,
+    },
     with_allocator,
 };
 use std::{
@@ -10,6 +15,7 @@ use std::{
     hint::black_box,
     io::{self, BufWriter, Write},
     path::PathBuf,
+    time::Instant,
 };
 
 #[derive(Parser)]
@@ -45,6 +51,12 @@ struct Cli {
     trials: u32,
     #[arg(long)]
     trace: Option<PathBuf>,
+    #[arg(
+        long,
+        requires = "trace",
+        help = "Also draw every traced turn to an offscreen canvas, as pokemon-window does, and record its time as draw_ns"
+    )]
+    draw: bool,
     #[arg(long)]
     no_header: bool,
     #[arg(long, conflicts_with_all = ["frames", "seed", "burst", "lifetime", "trail", "dt"], help = "Benchmark an exact recorded player session")]
@@ -178,6 +190,10 @@ fn benchmark<A: Allocator>(cli: &Cli) -> io::Result<()> {
     let once = |observe: Observer<'_, A>| {
         benchmark_session::<A>(cfg, cli.frames, recording.as_ref(), cli.particles, observe)
     };
+    let mut drawing = cli
+        .draw
+        .then(|| (Renderer::new(), Canvas::new(WIDTH, HEIGHT)));
+    let hud = Hud::default();
     let mut trace = cli
         .trace
         .as_ref()
@@ -187,7 +203,8 @@ fn benchmark<A: Allocator>(cli: &Cli) -> io::Result<()> {
     if let Some(out) = &mut trace {
         writeln!(
             out,
-            "mode,allocator,trial,frame,step_ns,live,reserved_bytes,wins,catches"
+            "mode,allocator,trial,frame,step_ns,live,reserved_bytes,wins,catches,\
+             created,retired,minor_faults,rss_bytes,draw_ns"
         )?;
     }
     for _ in 0..cli.warmups {
@@ -211,7 +228,13 @@ fn benchmark<A: Allocator>(cli: &Cli) -> io::Result<()> {
         if tracing {
             samples.reserve(steps);
         }
-        let mut observe = |game: &game_engine::pokemon::Pokemon<A>, frame: Frame| {
+        let mut observe = |game: &game_engine::pokemon::Pokemon<A>, mut frame: Frame| {
+            if let Some((renderer, canvas)) = &mut drawing {
+                let start = Instant::now();
+                renderer.draw(game, &hud, canvas);
+                frame.draw = start.elapsed();
+                black_box(&mut *canvas);
+            }
             if tracing {
                 samples.push(frame);
             }
@@ -219,8 +242,6 @@ fn benchmark<A: Allocator>(cli: &Cli) -> io::Result<()> {
             if let Some(view) = &mut view {
                 view.show(game, trial, frame.index as usize + 1, steps);
             }
-            #[cfg(not(feature = "window"))]
-            let _ = game;
         };
         let result = once(if tracing || cli.watch {
             Some(&mut observe)
@@ -277,7 +298,7 @@ fn benchmark<A: Allocator>(cli: &Cli) -> io::Result<()> {
             for f in &samples {
                 writeln!(
                     out,
-                    "{mode},{},{},{},{},{},{},{},{}",
+                    "{mode},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                     A::NAME,
                     trial,
                     f.index,
@@ -285,7 +306,12 @@ fn benchmark<A: Allocator>(cli: &Cli) -> io::Result<()> {
                     f.live,
                     f.reserved_bytes,
                     f.wins,
-                    f.catches
+                    f.catches,
+                    f.created,
+                    f.retired,
+                    f.minor_faults,
+                    f.rss_bytes,
+                    f.draw.as_nanos()
                 )?;
             }
         }

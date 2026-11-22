@@ -160,8 +160,8 @@ def plot_python():
     return None
 
 
-def run_plot(python, csvs, png, presentation=False):
-    command = [python, str(ROOT / 'scripts' / 'plot.py'), '--csv', *[str(path) for path in csvs], '--out', str(png)]
+def run_plot(python, csvs, png, presentation=False, extra=()):
+    command = [python, str(ROOT / 'scripts' / 'plot.py'), '--csv', *[str(path) for path in csvs], '--out', str(png), *extra]
     if presentation:
         command.append('--presentation')
     result = subprocess.run(

@@ -4,10 +4,11 @@ use std::{
 };
 
 use super::{Input, Pong};
-use crate::alloc::Allocator;
+use crate::{alloc::Allocator, memory};
 
-pub const TRACE_HEADER: &str =
-    "mode,allocator,trial,frame,step_ns,live,reserved_bytes,score_left,score_right";
+pub const TRACE_HEADER: &str = "mode,allocator,trial,frame,step_ns,live,reserved_bytes,\
+                                score_left,score_right,created,retired,minor_faults,rss_bytes,\
+                                draw_ns";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TraceMode {
@@ -26,6 +27,10 @@ impl TraceMode {
     }
 }
 
+/// One step's cost and state. `created`, `retired`, and `minor_faults` count
+/// this step only; `rss_bytes` is read after it, outside its timing. `draw`
+/// is the time to draw the frame afterwards, zero unless the caller draws and
+/// times it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Frame {
     pub index: u32,
@@ -33,6 +38,11 @@ pub struct Frame {
     pub live: usize,
     pub reserved_bytes: usize,
     pub score: [u32; 2],
+    pub created: u64,
+    pub retired: u64,
+    pub minor_faults: u64,
+    pub rss_bytes: usize,
+    pub draw: Duration,
 }
 
 impl Frame {
@@ -45,7 +55,7 @@ impl Frame {
     ) -> io::Result<()> {
         writeln!(
             out,
-            "{},{allocator},{trial},{},{},{},{},{},{}",
+            "{},{allocator},{trial},{},{},{},{},{},{},{},{},{},{},{}",
             mode.label(),
             self.index,
             self.step.as_nanos(),
@@ -53,6 +63,11 @@ impl Frame {
             self.reserved_bytes,
             self.score[0],
             self.score[1],
+            self.created,
+            self.retired,
+            self.minor_faults,
+            self.rss_bytes,
+            self.draw.as_nanos(),
         )
     }
 }
@@ -60,6 +75,8 @@ impl Frame {
 impl<A: Allocator> Pong<A> {
     pub fn timed_step(&mut self, input: Input) -> Frame {
         let index = self.frame;
+        let (created, retired) = (self.created, self.retired);
+        let faults = memory::minor_faults();
         let start = Instant::now();
         self.step(input);
         let step = start.elapsed();
@@ -69,6 +86,11 @@ impl<A: Allocator> Pong<A> {
             live: self.alloc.live_count(),
             reserved_bytes: self.alloc.reserved_bytes(),
             score: self.score,
+            created: self.created - created,
+            retired: self.retired - retired,
+            minor_faults: memory::minor_faults() - faults,
+            rss_bytes: memory::current_rss_bytes(),
+            draw: Duration::ZERO,
         }
     }
 }
@@ -84,7 +106,7 @@ mod tests {
         let mut frames = Vec::new();
         replay::<A>(
             recorded,
-            Some(&mut |f: Frame| frames.push((f.index, f.live, f.score))),
+            Some(&mut |_, f: Frame| frames.push((f.index, f.live, f.score))),
         );
         frames
     }
@@ -97,7 +119,7 @@ mod tests {
         };
         let cpu = CpuConfig::default();
         let mut frames: Vec<Frame> = Vec::new();
-        let traced = run::<PoolAllocator>(&cfg, &cpu, 3_600, Some(&mut |f| frames.push(f)));
+        let traced = run::<PoolAllocator>(&cfg, &cpu, 3_600, Some(&mut |_, f| frames.push(f)));
         let plain = run::<PoolAllocator>(&cfg, &cpu, 3_600, None);
 
         assert_eq!(traced.checksum, plain.checksum);
@@ -140,13 +162,21 @@ mod tests {
             live: 56,
             reserved_bytes: 4_096,
             score: [2, 3],
+            created: 8,
+            retired: 9,
+            minor_faults: 10,
+            rss_bytes: 65_536,
+            draw: std::time::Duration::from_nanos(777),
         };
         let mut row = Vec::new();
         frame
             .write_csv(&mut row, super::TraceMode::HumanReplay, "pool", 1)
             .unwrap();
         let row = String::from_utf8(row).unwrap();
-        assert_eq!(row, "human-replay,pool,1,7,1234,56,4096,2,3\n");
+        assert_eq!(
+            row,
+            "human-replay,pool,1,7,1234,56,4096,2,3,8,9,10,65536,777\n"
+        );
         assert_eq!(
             row.trim_end().split(',').count(),
             super::TRACE_HEADER.split(',').count()

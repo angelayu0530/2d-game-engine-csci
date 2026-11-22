@@ -2,6 +2,8 @@
 Cargo.lock.orig
 results/*.csv
 results/*.png
+results/*.svg
+results/traces/
 results/videos/
 .DS_Store
 __pycache__/

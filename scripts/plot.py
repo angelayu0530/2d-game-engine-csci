@@ -5,6 +5,7 @@ import csv
 import statistics
 import sys
 from collections import defaultdict
+from itertools import accumulate
 from pathlib import Path
 
 try:
@@ -22,14 +23,26 @@ MARKERS = {"heap": "o", "pool": "s", "arena": "^"}
 LINESTYLES = {"heap": "solid", "pool": "dashed", "arena": "dashdot"}
 REQUIRED = ("allocator", "count", "total_ns", "peak_rss_bytes")
 TRACE_REQUIRED = ("allocator", "trial", "frame", "step_ns", "live", "reserved_bytes")
-MODES = ["cpu-vs-cpu", "human-replay", "human-live", "pokemon-auto", "pokemon-replay", "fight-replay"]
+# Per-step allocation churn and process memory; traces from older binaries lack them.
+TRACE_MEMORY = ("created", "retired", "minor_faults", "rss_bytes")
+MODES = ["basic", "cpu-vs-cpu", "human-replay", "human-live", "pokemon-auto", "pokemon-replay", "fight-replay"]
 MODE_TITLES = {
+    "basic": "Basic workload (spawn, update, teardown)",
     "pokemon-auto": "Pokemon automated expedition",
     "pokemon-replay": "Pokemon recorded player session",
     "cpu-vs-cpu": "CPU vs CPU",
     "human-replay": "human match, replayed headless",
     "human-live": "human match, live window",
     "fight-replay": "Boss fight, recorded human session",
+}
+GRID_TITLES = {
+    "basic": "Basic workload",
+    "cpu-vs-cpu": "Pong (CPU vs CPU)",
+    "human-replay": "Pong (human replay)",
+    "human-live": "Pong (live window)",
+    "pokemon-auto": "Pokémon (automated)",
+    "pokemon-replay": "Pokémon (replay)",
+    "fight-replay": "Boss fight (replay)",
 }
 SMOOTH_FRAMES = 30
 # size_of::<Particle>() in src/particle.rs (pos, vel: [f32; 2], lifetime: u32).
@@ -48,17 +61,24 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--presentation", action="store_true", help="Wide slide layout with benchmark title and metric footer (trace CSVs)")
     parser.add_argument("--by-allocator", action="store_true", help="Separate allocator columns with shared metric scales (trace CSVs)")
+    parser.add_argument("--grid", action="store_true", help="One column per game, one row per metric (trace CSVs with churn and memory columns)")
+    parser.add_argument("--title", help="Figure title for --grid")
     args = parser.parse_args()
 
     tables = [load_rows(path) for path in args.csv]
     if all(is_trace(fields) for fields, _ in tables):
-        out = args.out or ROOT / "results" / "trace.png"
+        out = args.out or ROOT / "results" / ("grid.svg" if args.grid else "trace.png")
         try:
             traces = trace_series(args.csv, [rows for _, rows in tables])
+            if args.grid:
+                plot_grid(traces, out, title=args.title)
+            else:
+                plot_trace(traces, out, presentation=args.presentation, by_allocator=args.by_allocator)
         except ValueError as error:
             sys.exit(str(error))
-        plot_trace(traces, out, presentation=args.presentation, by_allocator=args.by_allocator)
         print_trace_table(traces)
+    elif args.grid:
+        sys.exit("--grid needs trace CSVs")
     elif len(tables) == 1 and is_bench(tables[0][0]):
         _, rows = tables[0]
         out = args.out or ROOT / "results" / "bench.png"
@@ -194,7 +214,9 @@ def trace_series(paths, tables):
         reference = next(iter(trials.values()))
         xs = sorted(reference)
         def state(row):
-            if mode.startswith("pokemon-"):
+            if mode == "basic":
+                score = ()
+            elif mode.startswith("pokemon-"):
                 score = (int(row["wins"]), int(row["catches"]))
             elif mode.startswith("fight-"):
                 score = (int(row["knight_hp"]), int(row["boss_hp"]))
@@ -204,14 +226,28 @@ def trace_series(paths, tables):
         for trial in trials.values():
             if sorted(trial) != xs or any(state(trial[x]) != state(reference[x]) for x in xs):
                 raise ValueError(f"{mode}/{allocator}: traces contain different workloads. Plot each particle load or session separately.")
-        series.append({
+        found = {
             "mode": mode, "label": allocator, "allocator": allocator, "frames": xs,
             "step_us": [statistics.median(int(t[x]["step_ns"]) for t in trials.values()) / 1e3 for x in xs],
             "live": [state(reference[x])[0] for x in xs],
             "reserved_kb": [statistics.median(int(t[x]["reserved_bytes"]) for t in trials.values()) / 1e3 for x in xs],
             "score": [state(reference[x])[1] for x in xs],
             "trials": len(trials),
-        })
+        }
+        if all(name in reference[xs[0]] for name in TRACE_MEMORY):
+            found["churn"] = [int(reference[x]["created"]) + int(reference[x]["retired"]) for x in xs]
+            found["minor_faults"] = [statistics.median(int(t[x]["minor_faults"]) for t in trials.values()) for x in xs]
+            found["rss_mb"] = [statistics.median(int(t[x]["rss_bytes"]) for t in trials.values()) / 1e6 for x in xs]
+        # Frame time as a player sees it: the step plus drawing it, where the trace drew.
+        drawn = "draw_ns" in reference[xs[0]] and any(int(reference[x]["draw_ns"]) for x in xs)
+        found["drawn"] = drawn
+        found["frame_us"] = [
+            statistics.median(
+                int(t[x]["step_ns"]) + (int(t[x]["draw_ns"]) if drawn else 0) for t in trials.values()
+            ) / 1e3
+            for x in xs
+        ]
+        series.append(found)
     mode_order = {name: i for i, name in enumerate(MODES)}
     alloc_order = {name: i for i, name in enumerate(ALLOCATORS)}
     series.sort(
@@ -229,6 +265,108 @@ def rolling_median(values, window):
     return [
         statistics.median(values[max(0, i - half) : i + half + 1]) for i in range(len(values))
     ]
+
+
+def rolling_min(values, window):
+    half = window // 2
+    return [min(values[max(0, i - half) : i + half + 1]) for i in range(len(values))]
+
+
+# (key, y label, y scale)
+GRID_ROWS = [
+    ("fps", "FPS\n(rolling median, higher is better)", "log"),
+    ("low_fps", "lowest FPS\n(rolling min, higher is better)", "log"),
+    ("live", "live particles\n(same on every allocator)", "linear"),
+    ("churn", "allocs + frees per frame\n(same on every allocator)", "symlog"),
+    ("reserved_mb", "allocator reserved (MB)", "linear"),
+    ("utilization", "storage utilization (%)\nlive ÷ reserved (heap: always 100)", "linear"),
+    ("rss_mb", "process RSS (MB)\n(current, not peak)", "linear"),
+    ("faults", "minor page faults\n(cumulative from frame 0)", "linear"),
+]
+
+
+def fps(frame_us):
+    return [1e6 / max(us, 1e-3) for us in frame_us]
+
+
+def grid_values(s, key, window):
+    if key == "fps":
+        return rolling_median(fps(s["frame_us"]), window)
+    if key == "low_fps":
+        return rolling_min(fps(s["frame_us"]), window)
+    if key == "reserved_mb":
+        return [kb / 1e3 for kb in s["reserved_kb"]]
+    if key == "utilization":
+        return [
+            live * PARTICLE_BYTES / (kb * 1e3) * 100 if kb > 0 else float("nan")
+            for live, kb in zip(s["live"], s["reserved_kb"])
+        ]
+    if key == "faults":
+        return list(accumulate(s["minor_faults"]))
+    return s[key]
+
+
+def plot_grid(series, out: Path, title=None) -> None:
+    stale = sorted({s["mode"] for s in series if "rss_mb" not in s})
+    if stale:
+        raise ValueError(
+            f"{', '.join(stale)} traces lack {', '.join(TRACE_MEMORY)}; re-run them with the current binaries"
+        )
+    modes = list(dict.fromkeys(s["mode"] for s in series))
+    fig, axes = plt.subplots(
+        len(GRID_ROWS),
+        len(modes),
+        figsize=(4.3 * len(modes) + 1.4, 2.1 * len(GRID_ROWS) + 1.0),
+        sharex="col",
+        sharey="row",
+        squeeze=False,
+        layout="constrained",
+    )
+    fig.suptitle(title or "Per-frame allocator comparison", fontsize=15)
+    for col, mode in enumerate(modes):
+        column = [s for s in series if s["mode"] == mode]
+        frames = column[0]["frames"]
+        window = max(1, len(frames) // 60)
+        for row, (key, label, scale) in enumerate(GRID_ROWS):
+            ax = axes[row][col]
+            for index, s in enumerate(column):
+                ax.plot(frames, grid_values(s, key, window),
+                        color=COLORS.get(s["allocator"], f"C{index}"),
+                        linestyle=LINESTYLES.get(s["allocator"], "solid"),
+                        linewidth=1.3, label=s["label"])
+            if scale == "symlog":
+                ax.set_yscale("symlog", linthresh=1)
+            else:
+                ax.set_yscale(scale)
+            ax.grid(True, alpha=0.3)
+            if key in ("fps", "low_fps"):
+                ax.axhline(60, color="0.35", linewidth=0.9, linestyle=":")
+                ax.annotate("60 fps", (0.01, 60), xycoords=("axes fraction", "data"),
+                            xytext=(0, 2), textcoords="offset points", fontsize=7, color="0.3")
+            if col == 0:
+                ax.set_ylabel(label, fontsize=9)
+            if row > 0:
+                ax.legend(loc="best", fontsize=7, framealpha=0.9)
+        top = axes[0][col]
+        handles, _ = top.get_legend_handles_labels()
+        labels = []
+        for s in column:
+            steps = s["frame_us"]
+            average = len(steps) * 1e6 / sum(steps)
+            p99 = statistics.quantiles(steps, n=100)[98] if len(steps) >= 2 else steps[0]
+            labels.append(f"{s['label']}: avg {average:,.0f} fps, 1% low {1e6 / p99:,.0f} fps")
+        top.legend(handles, labels, loc="best", fontsize=7, framealpha=0.9)
+        peak = max(max(s["live"]) for s in column)
+        drawing = "game logic + drawing" if all(s["drawn"] for s in column) else "game logic only (no renderer)"
+        top.set_title(f"{GRID_TITLES.get(mode, mode)}\n{len(frames)} frames, peak {peak:,} live\nFPS: {drawing}",
+                      fontsize=10)
+        unit = "turn" if mode.startswith("pokemon-") else "frame"
+        axes[-1][col].set_xlabel(
+            "frame (0 = spawn, last = teardown)" if mode == "basic" else unit
+        )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=110)
+    plt.close(fig)
 
 
 def plot_trace(series, out: Path, presentation=False, by_allocator=False) -> None:
@@ -282,7 +420,9 @@ def plot_trace(series, out: Path, presentation=False, by_allocator=False) -> Non
             if cur != prev
         ]
         final = reference["score"][-1]
-        if mode.startswith("pokemon-"):
+        if mode == "basic":
+            summary = f"{len(reference['frames'])} frames"
+        elif mode.startswith("pokemon-"):
             summary = f"{len(reference['frames'])} turns, {final[0]} wins, {final[1]} catches"
         elif mode.startswith("fight-"):
             summary = f"{len(reference['frames'])} frames, knight {final[0]} / boss {final[1]} hearts"
